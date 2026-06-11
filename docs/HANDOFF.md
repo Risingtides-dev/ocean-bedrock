@@ -1,0 +1,527 @@
+# Ocean Bedrock Handoff
+
+Generated: 2026-06-11T03:41:35Z  
+Repo: `/root/rt-nas/rt-nas`  
+Service: `ocean-bedrock`  
+Public URL: <https://ocean-bedrock-production.up.railway.app>
+
+## 1. Handoff summary
+
+Ocean Bedrock has been built and deployed as the cloud-box substrate for Ocean Longhouse support.
+
+Current baseline is live:
+
+```txt
+health endpoint:     live
+Postgres ledger:     live
+shared file API:     live
+scoped bearer auth:  live
+MCP wrapper:         live
+coworker bootstrap: live
+ingest worker:       live for text chunking
+semantic vectors:    not yet live
+```
+
+The system is usable today for:
+
+- scoped file storage,
+- coworker folder ingest,
+- agent/MCP read/write/search,
+- ledger events and snapshots,
+- text chunk indexing into Postgres.
+
+It is **not yet** a full vector/semantic knowledge engine because embeddings and Vectorize upserts are not implemented.
+
+## 2. Critical guardrails
+
+Do not violate these:
+
+1. Do not redefine Ocean Longhouse in Bedrock docs.
+2. Canonical split:
+   - `ocean-daemon` = local runtime/body/execution authority.
+   - `ocean-longhouse` = hive brain/coordination layer.
+   - `ocean-bedrock` = cloud-box support substrate.
+3. Do not hallucinate Ocean docs. Use canonical docs when discussing Ocean:
+   - `ocean-os/docs/LONGHOUSE.md`
+   - `ocean-os/docs/LONGHOUSE_ORCHESTRATION.md`
+   - relevant `ocean-surface` docs for Surface-specific claims.
+4. Do not commit or paste raw secrets into docs.
+5. Coworker ingest must remain opt-in folder selection.
+6. Coworker/agent tokens should be scoped bearer/MCP tokens, not admin tokens.
+7. Avoid ingesting secrets by default.
+
+## 3. Deployment facts
+
+```txt
+Railway project:       rising-tides-agents
+Railway service:       ocean-bedrock
+Railway service ID:    b117c870-d503-4cb3-8653-c094b50b6fbb
+Public URL:            https://ocean-bedrock-production.up.railway.app
+Volume:                ocean-bedrock-volume
+Volume mount:          /data
+Node package:          ocean-bedrock@0.1.0
+Runtime:               node src/server.mjs
+```
+
+Important deployment IDs:
+
+```txt
+4116f466-af55-4e70-b3d1-0c2600e763fb   initial successful service deploy
+d04ef61f-3d47-4073-914e-4fedbd387a80   metadata/worker deploy
+5d31071a-0634-4c41-a261-c95bca5feba9   contributor role deploy
+54a961eb-4cf8-47cf-8d6b-791f1f324f61   landing route deploy
+```
+
+Production env vars known to be set:
+
+```txt
+OCEAN_BEDROCK_ROOT=/data
+OCEAN_BEDROCK_INSTANCE=ocean-bedrock
+OCEAN_LEDGER_STORE=postgres
+OCEAN_BEDROCK_WORKER_ENABLED=true
+DATABASE_URL=<Railway Postgres URL>
+OCEAN_BEDROCK_BOOTSTRAP_TOKEN=<secret>
+```
+
+## 4. Token locations
+
+Local token files on Lennox:
+
+```txt
+/root/.config/ocean-bedrock/railway-admin-token.txt
+/root/.config/ocean-bedrock/operator-test-token.txt
+/root/.config/ocean-bedrock/operator-contributor-token.txt
+```
+
+Do not commit these files. Do not copy the admin token into docs.
+
+Normal operator/coworker testing should use:
+
+```txt
+/root/.config/ocean-bedrock/operator-contributor-token.txt
+```
+
+That token role is `contributor`:
+
+```txt
+can:    read, write, lock
+cannot: delete, admin token ops
+```
+
+Scopes:
+
+```txt
+/coworkers/operator-contributor
+/sessions/operator-contributor
+/context/ocean-bedrock
+```
+
+## 5. Current repo state
+
+Git state at handoff:
+
+```txt
+No commits yet for this project state. Project files are untracked.
+```
+
+Important modified/new paths:
+
+```txt
+.gitignore
+README.md
+package.json
+package-lock.json
+src/server.mjs
+src/auth.mjs
+src/ledger.mjs
+src/metadata.mjs
+db/001_longhouse_core.sql
+db/002_ocean_ledger.sql
+scripts/check-postgres.mjs
+scripts/issue-token.mjs
+scripts/migrate.mjs
+scripts/ocean-bedrock-mcp.mjs
+scripts/ocean-bootstrap.mjs
+scripts/ocean-ingest-local.mjs
+scripts/ocean-ingest-worker.mjs
+scripts/smoke-test.mjs
+docs/API.md
+docs/openapi.yaml
+docs/OCEAN-BEDROCK.md
+docs/OCEAN-LEDGER.md
+docs/OCEAN-LONGHOUSE-DATA-PLANE.md
+docs/COWORKER-BOOTSTRAP.md
+docs/MCP.md
+docs/WEEK-ONE-RUNBOOK.md
+docs/SOURCE-ADAPTER-PRECEDENTS.md
+docs/WIKI.md
+docs/HANDOFF.md
+docs/DEV-LOG.md
+workflows/ocean-bedrock-week-one.workflow.json
+workflows/runs/ocean-bedrock-week-one-20260611T010841Z.md
+```
+
+Recommended next operator action:
+
+```bash
+git status --short
+npm run smoke
+npm run db:check
+git add .
+git commit -m "Build and deploy Ocean Bedrock baseline"
+```
+
+Only commit after reviewing secrets are not present.
+
+## 6. Verification commands
+
+Set env:
+
+```bash
+export OCEAN_BEDROCK_URL='https://ocean-bedrock-production.up.railway.app'
+export OCEAN_BEDROCK_TOKEN="$(cat /root/.config/ocean-bedrock/operator-contributor-token.txt)"
+```
+
+Public route index:
+
+```bash
+curl "$OCEAN_BEDROCK_URL/"
+```
+
+Health:
+
+```bash
+curl "$OCEAN_BEDROCK_URL/health"
+```
+
+Authenticated info:
+
+```bash
+curl -H "Authorization: Bearer $OCEAN_BEDROCK_TOKEN" \
+  "$OCEAN_BEDROCK_URL/api/v1/info"
+```
+
+List scoped workspace:
+
+```bash
+curl -H "Authorization: Bearer $OCEAN_BEDROCK_TOKEN" \
+  "$OCEAN_BEDROCK_URL/api/v1/tree?path=/coworkers/operator-contributor&depth=5"
+```
+
+Write a file:
+
+```bash
+echo "handoff smoke" | curl -X PUT \
+  -H "Authorization: Bearer $OCEAN_BEDROCK_TOKEN" \
+  --data-binary @- \
+  "$OCEAN_BEDROCK_URL/api/v1/file?path=/coworkers/operator-contributor/handoff-smoke.md"
+```
+
+Search:
+
+```bash
+curl -H "Authorization: Bearer $OCEAN_BEDROCK_TOKEN" \
+  "$OCEAN_BEDROCK_URL/api/v1/search?q=handoff&path=/coworkers/operator-contributor&limit=10"
+```
+
+Delete should fail for contributor:
+
+```bash
+curl -i -X DELETE \
+  -H "Authorization: Bearer $OCEAN_BEDROCK_TOKEN" \
+  "$OCEAN_BEDROCK_URL/api/v1/file?path=/coworkers/operator-contributor/handoff-smoke.md"
+```
+
+Expected:
+
+```txt
+403 Token role "contributor" does not allow delete.
+```
+
+## 7. MCP verification
+
+```bash
+export OCEAN_BEDROCK_URL='https://ocean-bedrock-production.up.railway.app'
+export OCEAN_BEDROCK_TOKEN="$(cat /root/.config/ocean-bedrock/operator-contributor-token.txt)"
+npm run mcp
+```
+
+Already smoke-tested successfully:
+
+```txt
+initialize OK
+tools/list OK, 10 tools
+bedrock_list OK
+bedrock_snapshot OK
+```
+
+MCP tools:
+
+```txt
+bedrock_info
+bedrock_list
+bedrock_read
+bedrock_write
+bedrock_mkdir
+bedrock_search
+bedrock_lock
+bedrock_unlock
+bedrock_trace
+bedrock_snapshot
+```
+
+## 8. Database verification
+
+Schema check:
+
+```bash
+npm run db:check
+```
+
+Expected:
+
+```json
+{
+  "schemaReady": true,
+  "tables": {
+    "mounts": "longhouse.mounts",
+    "ledgerEvents": "longhouse.ledger_events",
+    "contextSnapshots": "longhouse.context_snapshots"
+  }
+}
+```
+
+Current DB state from last check:
+
+```txt
+objects:       7 files
+chunks:        5
+jobs done:     5
+jobs failed:   5
+ledgerEvents: 27
+graphNodes:   5 file nodes
+```
+
+Chunk status:
+
+```txt
+embedding_provider=none
+embedding_model=text-chunk-v1
+dimensions=0
+vectorized=0
+```
+
+This confirms chunk indexing exists, but semantic vector search does not.
+
+## 9. Current data inventory
+
+Global tree snapshot:
+
+```txt
+/context/README.md
+/context/ocean-bedrock/manifests/operator-contributor-workflow-smoke-1781141239331.json
+/context/ocean-bedrock/manifests/operator-test-workflow-smoke-1781140704660.json
+/context/ocean-bedrock/sources/operator-contributor-workflow-smoke.json
+/context/ocean-bedrock/sources/operator-test-workflow-smoke.json
+/coworkers/operator-contributor/security/delete-check.md
+/coworkers/operator-contributor/workflow-smoke/contrib-notes/README.md
+/coworkers/operator-test/workflow-smoke/local-notes/README.md
+/coworkers/operator-test/workflow-smoke/local-notes/context.json
+/coworkers/operator-test/workflow-smoke/local-notes/indexed-smoke.md
+/docs/README.md
+/sessions/README.md
+/vault/README.md
+```
+
+Empty/present directories:
+
+```txt
+/handoffs
+/shared
+/sessions/operator-contributor
+```
+
+## 10. Source adapter research status
+
+Research doc created:
+
+```txt
+docs/SOURCE-ADAPTER-PRECEDENTS.md
+```
+
+Precedents reviewed:
+
+```txt
+Airbyte: connector spec + catalog + state
+Singer/Meltano: config + catalog + state
+Kafka Connect/Debezium: connector config + offsets + schema history
+Dagster: configurable external resources
+LangChain/LlamaIndex: loaders/readers -> document + metadata
+Unstructured: source connectors + standardized metadata
+```
+
+Recommended future tables:
+
+```txt
+longhouse.source_adapters
+longhouse.source_instances
+longhouse.source_streams
+longhouse.source_sync_runs
+longhouse.source_records
+```
+
+Implementation is not done yet. Next migration should be:
+
+```txt
+db/003_source_adapters.sql
+```
+
+Then wire current `ocean-bootstrap` and `ocean-ingest-local` into those tables.
+
+## 11. Next work queue
+
+### Priority 1 — Commit and stabilize baseline
+
+- Review untracked files.
+- Ensure no secrets are committed.
+- Run `npm run smoke`.
+- Run `npm run db:check`.
+- Commit baseline.
+
+### Priority 2 — Source adapter registry
+
+Add:
+
+```txt
+db/003_source_adapters.sql
+src/sources.mjs or src/source-adapters.mjs
+```
+
+Tables:
+
+```txt
+source_adapters
+source_instances
+source_streams
+source_sync_runs
+source_records
+```
+
+Seed adapter definitions:
+
+```txt
+local_folder
+github
+telegram
+slack
+notion
+linear
+google_drive
+r2
+```
+
+Wire existing local folder ingest so every run creates/updates:
+
+```txt
+source_instance
+source_stream
+source_sync_run
+source_record
+```
+
+### Priority 3 — Embeddings and Vectorize
+
+Add:
+
+```txt
+Cloudflare Workers AI embedding client
+Vectorize upsert support
+semantic search endpoint
+MCP semantic search tool
+```
+
+Existing Cloudflare resource:
+
+```txt
+Vectorize index: ocean-longhouse-context
+```
+
+Current chunk rows are ready to be reprocessed into vectors later.
+
+### Priority 4 — R2 object adapter
+
+Existing Cloudflare R2 bucket:
+
+```txt
+ocean-longhouse
+```
+
+Need:
+
+```txt
+R2 S3 access keys
+Railway env vars
+adapter for canonical object bytes
+backfill/migration strategy from volume to R2 if desired
+```
+
+### Priority 5 — Real coworker rollout
+
+Before issuing real coworker tokens:
+
+- confirm path scopes,
+- document install instructions,
+- run a small real folder dry-run,
+- inspect skipped files,
+- verify secrets are ignored,
+- issue contributor-only tokens,
+- confirm delete is blocked.
+
+## 12. Railway deploy runbook
+
+Use Railway skill practices. From repo root:
+
+```bash
+export RAILWAY_CALLER="skill:use-railway@1.2.1"
+export RAILWAY_AGENT_SESSION="railway-skill-$(date -u +%Y%m%d)-ocean-bedrock"
+env -u RAILWAY_SERVICE_ID -u RAILWAY_SERVICE_NAME \
+  railway up --service ocean-bedrock --environment production --detach \
+  -m "Deploy Ocean Bedrock changes"
+```
+
+Check status:
+
+```bash
+env -u RAILWAY_SERVICE_ID -u RAILWAY_SERVICE_NAME \
+  railway service status --service ocean-bedrock --json
+```
+
+After deploy:
+
+```bash
+curl -fsS https://ocean-bedrock-production.up.railway.app/health
+```
+
+## 13. Known issues
+
+1. Source adapter tables are researched but not implemented.
+2. Embeddings/Vectorize are not implemented.
+3. R2 bucket exists but object adapter/keys are not wired.
+4. Failed ingest jobs exist from earlier worker attempts; inspect before production cleanup.
+5. Token registry is volume JSON, not Postgres; okay for one Railway replica, not ideal for multi-replica.
+6. `/vault` is just a folder placeholder, not an encrypted secrets vault.
+7. Current search is file text search, not semantic search.
+8. Current graph only creates basic file nodes, not entity/relationship extraction.
+
+## 14. Acceptance criteria for next handoff
+
+The next handoff should include:
+
+- commit hash,
+- latest Railway deployment ID,
+- current live health output,
+- DB counts,
+- exact migration status,
+- whether embeddings/vectorize are live,
+- source adapter tables status,
+- any issued coworker tokens by name/scope, not raw token values.

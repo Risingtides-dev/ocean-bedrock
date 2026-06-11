@@ -1,0 +1,368 @@
+openapi: 3.1.0
+info:
+  title: Ocean Bedrock Shared Filesystem API
+  version: 0.1.0
+  description: Token-authenticated HTTP shared filesystem for agents and coworkers.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    FileInfo:
+      type: object
+      properties:
+        path: { type: string }
+        name: { type: string }
+        type: { type: string, enum: [file, directory, symlink, other] }
+        size: { type: integer }
+        mtime: { type: string, format: date-time }
+        ctime: { type: string, format: date-time }
+        etag: { type: string }
+    Error:
+      type: object
+      properties:
+        ok: { type: boolean, const: false }
+        error: { type: string }
+        details: {}
+paths:
+  /health:
+    get:
+      security: []
+      summary: Public health check
+      responses:
+        '200': { description: OK }
+  /api/v1/info:
+    get:
+      summary: Instance info and authenticated principal
+      responses:
+        '200': { description: Info }
+  /api/v1/openapi.yaml:
+    get:
+      security: []
+      summary: OpenAPI document
+      responses:
+        '200': { description: OpenAPI YAML }
+  /api/v1/list:
+    get:
+      summary: List directory entries
+      parameters:
+        - in: query
+          name: path
+          schema: { type: string, default: / }
+        - in: query
+          name: depth
+          schema: { type: integer, default: 1, minimum: 1, maximum: 20 }
+      responses:
+        '200':
+          description: Directory listing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  root: { $ref: '#/components/schemas/FileInfo' }
+                  entries:
+                    type: array
+                    items: { $ref: '#/components/schemas/FileInfo' }
+  /api/v1/tree:
+    get:
+      summary: Recursive directory listing
+      parameters:
+        - in: query
+          name: path
+          schema: { type: string, default: / }
+        - in: query
+          name: depth
+          schema: { type: integer, default: 5, minimum: 1, maximum: 20 }
+      responses:
+        '200': { description: Directory tree }
+  /api/v1/stat:
+    get:
+      summary: Stat file or directory
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: File metadata
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileInfo' }
+  /api/v1/file:
+    get:
+      summary: Download/read file
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema: { type: string }
+        - in: query
+          name: inline
+          schema: { type: string, enum: ['1'] }
+      responses:
+        '200': { description: File bytes }
+    put:
+      summary: Create or replace file with raw body
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Written file metadata
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileInfo' }
+    delete:
+      summary: Delete file or directory
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema: { type: string }
+        - in: query
+          name: recursive
+          schema: { type: boolean, default: false }
+      responses:
+        '200': { description: Deleted }
+  /api/v1/mkdir:
+    post:
+      summary: Create directory recursively
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: { type: string }
+      responses:
+        '201': { description: Created directory }
+  /api/v1/move:
+    post:
+      summary: Move/rename path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties:
+                from: { type: string }
+                to: { type: string }
+                overwrite: { type: boolean, default: false }
+      responses:
+        '200': { description: Moved }
+  /api/v1/copy:
+    post:
+      summary: Copy path recursively
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties:
+                from: { type: string }
+                to: { type: string }
+                overwrite: { type: boolean, default: false }
+      responses:
+        '201': { description: Copied }
+  /api/v1/search:
+    get:
+      summary: Text search scoped files
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string }
+        - in: query
+          name: path
+          schema: { type: string, default: / }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        '200': { description: Search results }
+  /api/v1/ledger/events:
+    get:
+      summary: List Ocean Ledger events visible to the token
+      parameters:
+        - in: query
+          name: correlation_id
+          schema: { type: string }
+        - in: query
+          name: actor_id
+          schema: { type: string }
+        - in: query
+          name: actor_name
+          schema: { type: string }
+        - in: query
+          name: actor_type
+          schema: { type: string }
+        - in: query
+          name: event_type
+          schema: { type: string }
+        - in: query
+          name: source_id
+          schema: { type: string }
+        - in: query
+          name: path
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 100, maximum: 5000 }
+      responses:
+        '200': { description: Ledger events }
+    post:
+      summary: Append an Ocean Ledger event
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event_type]
+              properties:
+                event_type: { type: string }
+                correlation_id: { type: string }
+                lab: { type: string }
+                virtual_path: { type: string }
+                payload: { type: object }
+                visible_context: {}
+                context_snapshot: {}
+                clearance: { type: string, enum: [PUBLIC, UNCLASSIFIED, CONFIDENTIAL, SECRET, TOP_SECRET], default: UNCLASSIFIED }
+                tags:
+                  type: array
+                  items: { type: string }
+      responses:
+        '201': { description: Appended event }
+  /api/v1/ledger/trace:
+    get:
+      summary: Trace an Ocean Ledger correlation chain
+      parameters:
+        - in: query
+          name: correlation_id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 1000, maximum: 5000 }
+      responses:
+        '200': { description: Correlated event chain }
+  /api/v1/ledger/snapshots:
+    post:
+      summary: Create a context snapshot event
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                snapshot_type: { type: string, default: context }
+                correlation_id: { type: string }
+                virtual_path: { type: string }
+                files:
+                  type: array
+                  items: { type: string }
+                events:
+                  type: array
+                  items: { type: string }
+                summary: { type: string }
+                metadata: { type: object }
+                clearance: { type: string, enum: [PUBLIC, UNCLASSIFIED, CONFIDENTIAL, SECRET, TOP_SECRET], default: CONFIDENTIAL }
+      responses:
+        '201': { description: Snapshot event created }
+  /api/v1/ledger/verify:
+    get:
+      summary: Verify local Ocean Ledger hash chain, admin only
+      responses:
+        '200': { description: Verification result }
+  /api/v1/locks:
+    get:
+      summary: List active locks
+      parameters:
+        - in: query
+          name: path
+          schema: { type: string }
+      responses:
+        '200': { description: Locks }
+    post:
+      summary: Acquire a lock lease
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: { type: string }
+                ttlSeconds: { type: integer, default: 900, minimum: 30, maximum: 86400 }
+                note: { type: string }
+      responses:
+        '201': { description: Lock acquired }
+  /api/v1/locks/{lockId}:
+    delete:
+      summary: Release lock
+      parameters:
+        - in: path
+          name: lockId
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Released }
+  /api/v1/tokens:
+    get:
+      summary: List token records, admin only
+      responses:
+        '200': { description: Tokens }
+    post:
+      summary: Issue token, admin only
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                role: { type: string, enum: [readonly, contributor, agent, readwrite, admin], default: contributor }
+                scopes:
+                  type: array
+                  items: { type: string }
+                ttlDays: { type: number }
+                expiresAt: { type: string, format: date-time }
+      responses:
+        '201': { description: Created token; token secret is returned once }
+  /api/v1/tokens/{tokenId}:
+    delete:
+      summary: Revoke token, admin only
+      parameters:
+        - in: path
+          name: tokenId
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Revoked }
+  /api/v1/audit:
+    get:
+      summary: Recent audit events, admin only
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, default: 100, maximum: 1000 }
+      responses:
+        '200': { description: Audit events }
