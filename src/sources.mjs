@@ -348,6 +348,17 @@ export async function ensureSourceAdapters(db) {
     count++;
   }
 
+  await emitSourceEvent({
+    eventType: 'source.adapters.seeded',
+    sourceId: 'source_adapters',
+    sourceSequence: `v1:${DEFAULT_ADAPTERS.length}`,
+    payload: {
+      adapter_ids: DEFAULT_ADAPTERS.map((adapter) => adapter.id),
+      count,
+    },
+    adapterId: 'ocean-bedrock',
+  });
+
   return count;
 }
 
@@ -388,18 +399,17 @@ export async function upsertSourceInstance(db, instance) {
     // Update existing
     result = await db.query(
       `UPDATE longhouse.source_instances SET
-         owner_name = COALESCE($3, longhouse.source_instances.owner_name),
-         owner_token_id = COALESCE($4, longhouse.source_instances.owner_token_id),
-         remote_prefix = $5,
-         config = longhouse.source_instances.config || $6::jsonb,
-         secret_ref = COALESCE($7, longhouse.source_instances.secret_ref),
-         clearance = $8,
+         owner_name = COALESCE($2, longhouse.source_instances.owner_name),
+         owner_token_id = COALESCE($3, longhouse.source_instances.owner_token_id),
+         remote_prefix = $4,
+         config = longhouse.source_instances.config || $5::jsonb,
+         secret_ref = COALESCE($6, longhouse.source_instances.secret_ref),
+         clearance = $7,
          updated_at = now()
        WHERE id = $1
        RETURNING id, adapter_id, name`,
       [
         existing.rows[0].id,
-        instance.adapter_id,
         instance.owner_name || null,
         instance.owner_token_id || null,
         instance.remote_prefix,
@@ -413,7 +423,7 @@ export async function upsertSourceInstance(db, instance) {
     result = await db.query(
       `INSERT INTO longhouse.source_instances
          (adapter_id, name, owner_name, owner_token_id, remote_prefix, config, secret_ref, clearance)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
        RETURNING id, adapter_id, name`,
       [
         instance.adapter_id,
@@ -544,7 +554,7 @@ export async function createSourceSyncRun(db, run) {
   const result = await db.query(
     `INSERT INTO longhouse.source_sync_runs
        (source_instance_id, stream_id, status, started_at)
-     VALUES ($1, $2, 'running', $3)
+     VALUES ($1, $2::uuid, 'running', $3)
      RETURNING id, source_instance_id, stream_id, status, started_at`,
     [run.source_instance_id, run.stream_id || null, startedAt],
   );
@@ -561,7 +571,7 @@ export async function createSourceSyncRun(db, run) {
   await emitSourceEvent({
     eventType: 'source.sync.started',
     sourceId: `${instance.adapter_id || '?'}:${instance.name || run.source_instance_id}`,
-    sourceSequence: row.id,
+    sourceSequence: `${row.id}:started`,
     payload: {
       source_instance_id: run.source_instance_id,
       stream_id: run.stream_id || null,
@@ -652,7 +662,7 @@ export async function completeSourceSyncRun(db, runId, stats = {}) {
   await emitSourceEvent({
     eventType: 'source.sync.completed',
     sourceId: `${instance.adapter_id || '?'}:${instance.name || row.source_instance_id}`,
-    sourceSequence: runId,
+    sourceSequence: `${runId}:completed`,
     payload: {
       sync_run_id: runId,
       status,
@@ -700,7 +710,7 @@ export async function upsertSourceRecord(db, record) {
   const result = await db.query(
     `INSERT INTO longhouse.source_records
        (source_instance_id, stream_id, source_record_id, virtual_path, object_id, source_updated_at, content_sha256, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     VALUES ($1, $2::uuid, $3, $4, $5::uuid, $6::timestamptz, $7, $8)
      ON CONFLICT (source_instance_id, source_record_id) DO UPDATE SET
        stream_id = COALESCE(EXCLUDED.stream_id, longhouse.source_records.stream_id),
        virtual_path = COALESCE(EXCLUDED.virtual_path, longhouse.source_records.virtual_path),
@@ -737,7 +747,7 @@ export async function upsertSourceRecord(db, record) {
     eventType: 'source.record.ingested',
     sourceId: `${instance.adapter_id || '?'}:${instance.name || record.source_instance_id}`,
     virtualPath: record.virtual_path || null,
-    sourceSequence: record.source_record_id,
+    sourceSequence: `${record.source_record_id}:${record.content_sha256 || seenAt}`,
     payload: {
       source_instance_id: record.source_instance_id,
       stream_id: record.stream_id || null,

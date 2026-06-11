@@ -3,6 +3,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import crypto from 'node:crypto';
+import { getPool } from '../src/metadata.mjs';
+import {
+  ensureSourceAdapters,
+  upsertSourceInstance,
+  upsertSourceStream,
+  createSourceSyncRun,
+  completeSourceSyncRun,
+  upsertSourceRecord,
+} from '../src/sources.mjs';
 
 const DEFAULT_CONFIG_FILE = path.join(os.homedir(), '.config', 'ocean-bedrock', 'bootstrap.json');
 const DEFAULT_STATE_FILE = path.join(os.homedir(), '.local', 'state', 'ocean-bedrock', 'ingest-state.json');
@@ -45,6 +54,14 @@ function expandHome(value) {
   if (value === '~') return os.homedir();
   if (value.startsWith('~/')) return path.join(os.homedir(), value.slice(2));
   return value;
+}
+
+function slugify(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'coworker';
 }
 
 function toPosix(value) {
@@ -143,6 +160,74 @@ function contentTypeFor(filePath) {
   return 'application/octet-stream';
 }
 
+async function findObjectIdByPath(db, virtualPath) {
+  const result = await db.query('SELECT id FROM longhouse.objects WHERE virtual_path = $1 LIMIT 1', [virtualPath]);
+  return result.rows[0]?.id || null;
+}
+
+async function startSourceRegistryRun(config, args) {
+  if (args.dryRun) return { enabled: false, reason: 'dry-run' };
+  if (!process.env.DATABASE_URL) return { enabled: false, reason: 'DATABASE_URL is not set' };
+
+  const db = getPool();
+  if (!db) return { enabled: false, reason: 'DATABASE_URL is not set' };
+
+  const ownerSlug = config.ownerSlug || slugify(config.ownerName);
+  const deviceSlug = config.deviceSlug || slugify(config.deviceName);
+  const correlationId = `cor-ingest-${ownerSlug}-${deviceSlug}-${Date.now()}`;
+
+  try {
+    await ensureSourceAdapters(db);
+    const instance = await upsertSourceInstance(db, {
+      adapter_id: 'local_folder',
+      name: `${ownerSlug}-${deviceSlug}`,
+      owner_name: config.ownerName || ownerSlug,
+      owner_token_id: null,
+      remote_prefix: config.remoteRoot || `/coworkers/${ownerSlug}/${deviceSlug}`,
+      config: {
+        device: config.deviceName || deviceSlug,
+        device_slug: deviceSlug,
+        feed_mode: config.feedMode,
+        allowed_extensions: config.allowedExtensions,
+        ignore: config.defaultIgnores,
+        max_file_bytes: config.maxFileBytes,
+        source_count: (config.sources || []).length,
+      },
+      secret_ref: null,
+      clearance: 'CONFIDENTIAL',
+      correlationId,
+    });
+
+    const streams = new Map();
+    for (const source of config.sources || []) {
+      const stream = await upsertSourceStream(db, {
+        source_instance_id: instance.id,
+        stream_key: source.id,
+        stream_type: 'folder',
+        remote_prefix: source.remotePrefix,
+        selection: {
+          label: source.label,
+          local_path: source.localPath,
+          enabled: source.enabled,
+          recursive: true,
+        },
+        cursor: {},
+        correlationId,
+      });
+      streams.set(source.id, stream);
+    }
+
+    const run = await createSourceSyncRun(db, {
+      source_instance_id: instance.id,
+      correlationId,
+    });
+
+    return { enabled: true, db, correlationId, instance, streams, run };
+  } catch (error) {
+    return { enabled: false, error: error.message };
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -161,6 +246,8 @@ async function main() {
   const maxFileBytes = Math.max(1, Number(args.maxFileMb || 0)) * 1024 * 1024 || Number(config.maxFileBytes || 10 * 1024 * 1024);
   const maxFiles = args.maxFiles ? Math.max(1, Number(args.maxFiles)) : Infinity;
   const startedAt = new Date().toISOString();
+  const sourceRegistry = await startSourceRegistryRun(config, args);
+  if (sourceRegistry.error) console.warn(`Source registry skipped: ${sourceRegistry.error}`);
 
   const manifest = {
     version: 1,
@@ -178,7 +265,19 @@ async function main() {
     if (!source.enabled) continue;
     if (selected.size && !selected.has(source.id)) continue;
     const root = path.resolve(expandHome(source.localPath));
-    const sourceSummary = { id: source.id, label: source.label, localPath: root, remotePrefix: source.remotePrefix, files: [], skipped: 0, unchanged: 0, errors: [] };
+    const stream = sourceRegistry.enabled ? sourceRegistry.streams.get(source.id) : null;
+    const sourceSummary = {
+      id: source.id,
+      label: source.label,
+      localPath: root,
+      remotePrefix: source.remotePrefix,
+      sourceInstanceId: sourceRegistry.enabled ? sourceRegistry.instance.id : source.sourceInstanceId || null,
+      sourceStreamId: stream?.id || source.sourceStreamId || null,
+      files: [],
+      skipped: 0,
+      unchanged: 0,
+      errors: [],
+    };
     manifest.sources.push(sourceSummary);
 
     for await (const item of walk(root, config.defaultIgnores || [])) {
@@ -224,6 +323,36 @@ async function main() {
           fileRecord.uploaded = true;
           manifest.totals.uploaded += 1;
           manifest.totals.bytesUploaded += stat.size;
+
+          if (sourceRegistry.enabled) {
+            try {
+              const objectId = await findObjectIdByPath(sourceRegistry.db, remotePath);
+              await upsertSourceRecord(sourceRegistry.db, {
+                source_instance_id: sourceRegistry.instance.id,
+                stream_id: stream?.id || null,
+                source_record_id: `${source.id}:${toPosix(item.rel)}`,
+                virtual_path: remotePath,
+                object_id: objectId,
+                source_updated_at: stat.mtime.toISOString(),
+                content_sha256: hash,
+                metadata: {
+                  source_id: source.id,
+                  label: source.label,
+                  rel: toPosix(item.rel),
+                  local_path: root,
+                  size: stat.size,
+                  content_type: contentTypeFor(item.path),
+                },
+                correlationId: sourceRegistry.correlationId,
+              });
+              fileRecord.sourceRecordId = `${source.id}:${toPosix(item.rel)}`;
+              fileRecord.objectId = objectId;
+            } catch (registryError) {
+              fileRecord.sourceRegistryError = registryError.message;
+              console.warn(`Source record skipped for ${remotePath}: ${registryError.message}`);
+            }
+          }
+
           state.files[stateKey] = {
             sha256: hash,
             size: stat.size,
@@ -276,12 +405,44 @@ async function main() {
     } catch (error) {
       console.warn(`Ledger event skipped: ${error.message}`);
     }
+    if (sourceRegistry.enabled) {
+      try {
+        await completeSourceSyncRun(sourceRegistry.db, sourceRegistry.run.id, {
+          scanned_count: manifest.totals.scanned,
+          changed_count: manifest.totals.changed,
+          uploaded_count: manifest.totals.uploaded,
+          skipped_count: manifest.totals.skipped,
+          error_count: manifest.totals.errors,
+          manifest_path: manifestPath,
+          correlationId: sourceRegistry.correlationId,
+          metadata: {
+            unchanged_count: manifest.totals.unchanged,
+            owner_name: config.ownerName,
+            device_name: config.deviceName,
+          },
+        });
+      } catch (registryError) {
+        console.warn(`Source sync run completion skipped: ${registryError.message}`);
+      }
+    }
+
     state.lastRunAt = manifest.completedAt;
     state.lastManifestPath = manifestPath;
     await writeJson(statePath, state);
   }
 
-  console.log(JSON.stringify({ ok: true, dryRun: Boolean(args.dryRun), configPath, statePath, manifestPath: args.dryRun ? null : manifestPath, totals: manifest.totals, sources: manifest.sources }, null, 2));
+  console.log(JSON.stringify({
+    ok: true,
+    dryRun: Boolean(args.dryRun),
+    configPath,
+    statePath,
+    manifestPath: args.dryRun ? null : manifestPath,
+    sourceRegistry: sourceRegistry.enabled
+      ? { enabled: true, sourceInstanceId: sourceRegistry.instance.id, syncRunId: sourceRegistry.run.id }
+      : { enabled: false, reason: sourceRegistry.reason || sourceRegistry.error || 'unavailable' },
+    totals: manifest.totals,
+    sources: manifest.sources,
+  }, null, 2));
 }
 
 main().catch((error) => {

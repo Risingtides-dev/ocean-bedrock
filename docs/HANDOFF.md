@@ -121,44 +121,26 @@ Scopes:
 Git state at handoff:
 
 ```txt
-No commits yet for this project state. Project files are untracked.
+Baseline committed: a4e3133 Build and deploy Ocean Bedrock baseline
+Source helper committed: 288cda2 feat(sources): add source adapter helper module
+Source adapter registry implementation is now staged/ready for the next source-registry commit.
 ```
 
-Important modified/new paths:
+Important source-registry paths:
 
 ```txt
-.gitignore
-README.md
-package.json
-package-lock.json
-src/server.mjs
-src/auth.mjs
-src/ledger.mjs
-src/metadata.mjs
-db/001_longhouse_core.sql
-db/002_ocean_ledger.sql
-scripts/check-postgres.mjs
-scripts/issue-token.mjs
+db/003_source_adapters.sql
+src/sources.mjs
 scripts/migrate.mjs
-scripts/ocean-bedrock-mcp.mjs
+scripts/check-postgres.mjs
 scripts/ocean-bootstrap.mjs
 scripts/ocean-ingest-local.mjs
-scripts/ocean-ingest-worker.mjs
+scripts/ocean-local-app.mjs
 scripts/smoke-test.mjs
-docs/API.md
-docs/openapi.yaml
-docs/OCEAN-BEDROCK.md
-docs/OCEAN-LEDGER.md
-docs/OCEAN-LONGHOUSE-DATA-PLANE.md
-docs/COWORKER-BOOTSTRAP.md
-docs/MCP.md
-docs/WEEK-ONE-RUNBOOK.md
-docs/SOURCE-ADAPTER-PRECEDENTS.md
+docs/LOCAL-GUI-APP.md
 docs/WIKI.md
 docs/HANDOFF.md
 docs/DEV-LOG.md
-workflows/ocean-bedrock-week-one.workflow.json
-workflows/runs/ocean-bedrock-week-one-20260611T010841Z.md
 ```
 
 Recommended next operator action:
@@ -168,7 +150,7 @@ git status --short
 npm run smoke
 npm run db:check
 git add .
-git commit -m "Build and deploy Ocean Bedrock baseline"
+git commit -m "Add Ocean Bedrock source adapter registry"
 ```
 
 Only commit after reviewing secrets are not present.
@@ -286,20 +268,31 @@ Expected:
   "tables": {
     "mounts": "longhouse.mounts",
     "ledgerEvents": "longhouse.ledger_events",
-    "contextSnapshots": "longhouse.context_snapshots"
-  }
+    "contextSnapshots": "longhouse.context_snapshots",
+    "sourceAdapters": "longhouse.source_adapters",
+    "sourceInstances": "longhouse.source_instances",
+    "sourceStreams": "longhouse.source_streams",
+    "sourceSyncRuns": "longhouse.source_sync_runs",
+    "sourceRecords": "longhouse.source_records"
+  },
+  "sourceAdaptersSeeded": 8
 }
 ```
 
 Current DB state from last check:
 
 ```txt
-objects:       7 files
-chunks:        5
-jobs done:     5
-jobs failed:   5
-ledgerEvents: 27
-graphNodes:   5 file nodes
+objects:       19 files
+chunks:        17
+jobs done:     17
+jobs failed:   9
+ledgerEvents: 89
+graphNodes:   17 file nodes
+sourceAdapters: 8 seeded
+sourceInstances: 6
+sourceStreams: 6
+sourceSyncRuns: 2 completed, 3 cancelled debug runs
+sourceRecords: 2
 ```
 
 Chunk status:
@@ -341,7 +334,7 @@ Empty/present directories:
 /sessions/operator-contributor
 ```
 
-## 10. Source adapter research status
+## 10. Source adapter registry status
 
 Research doc created:
 
@@ -360,7 +353,7 @@ LangChain/LlamaIndex: loaders/readers -> document + metadata
 Unstructured: source connectors + standardized metadata
 ```
 
-Recommended future tables:
+Implemented live tables:
 
 ```txt
 longhouse.source_adapters
@@ -370,66 +363,35 @@ longhouse.source_sync_runs
 longhouse.source_records
 ```
 
-Implementation is not done yet. Next migration should be:
+Implementation status:
 
 ```txt
-db/003_source_adapters.sql
+db/003_source_adapters.sql applied to Railway Postgres
+8 adapter definitions seeded
+src/sources.mjs helper module added
+scripts/ocean-bootstrap.mjs writes source_instance/source_stream when DATABASE_URL is available
+scripts/ocean-ingest-local.mjs writes source_sync_run/source_record and object_id lineage when DATABASE_URL is available
 ```
 
-Then wire current `ocean-bootstrap` and `ocean-ingest-local` into those tables.
+Verified smoke:
+
+```txt
+operator-contributor local_folder bootstrap registry: enabled
+operator-contributor local_folder ingest registry: enabled
+source_record created and linked to longhouse.objects.id
+```
 
 ## 11. Next work queue
 
-### Priority 1 — Commit and stabilize baseline
+### Priority 1 — Commit source adapter registry
 
-- Review untracked files.
+- Review changed source-registry files.
 - Ensure no secrets are committed.
-- Run `npm run smoke`.
-- Run `npm run db:check`.
-- Commit baseline.
+- Confirm `npm run smoke` passes.
+- Confirm `npm run db:check` reports source tables and 8 seeded adapters.
+- Commit source registry implementation.
 
-### Priority 2 — Source adapter registry
-
-Add:
-
-```txt
-db/003_source_adapters.sql
-src/sources.mjs or src/source-adapters.mjs
-```
-
-Tables:
-
-```txt
-source_adapters
-source_instances
-source_streams
-source_sync_runs
-source_records
-```
-
-Seed adapter definitions:
-
-```txt
-local_folder
-github
-telegram
-slack
-notion
-linear
-google_drive
-r2
-```
-
-Wire existing local folder ingest so every run creates/updates:
-
-```txt
-source_instance
-source_stream
-source_sync_run
-source_record
-```
-
-### Priority 3 — Embeddings and Vectorize
+### Priority 2 — Embeddings and Vectorize
 
 Add:
 
@@ -448,7 +410,7 @@ Vectorize index: ocean-longhouse-context
 
 Current chunk rows are ready to be reprocessed into vectors later.
 
-### Priority 4 — R2 object adapter
+### Priority 3 — R2 object adapter
 
 Existing Cloudflare R2 bucket:
 
@@ -465,7 +427,15 @@ adapter for canonical object bytes
 backfill/migration strategy from volume to R2 if desired
 ```
 
-### Priority 5 — Real coworker rollout
+### Priority 4 — Real coworker rollout
+
+A V0 local GUI app exists:
+
+```bash
+npm run ocean:app
+```
+
+It lets coworkers paste a scoped token, choose folders, run manual sync, and schedule sync while the app is open. See `docs/LOCAL-GUI-APP.md`.
 
 Before issuing real coworker tokens:
 
@@ -504,14 +474,14 @@ curl -fsS https://ocean-bedrock-production.up.railway.app/health
 
 ## 13. Known issues
 
-1. Source adapter tables are researched but not implemented.
-2. Embeddings/Vectorize are not implemented.
-3. R2 bucket exists but object adapter/keys are not wired.
-4. Failed ingest jobs exist from earlier worker attempts; inspect before production cleanup.
-5. Token registry is volume JSON, not Postgres; okay for one Railway replica, not ideal for multi-replica.
-6. `/vault` is just a folder placeholder, not an encrypted secrets vault.
-7. Current search is file text search, not semantic search.
-8. Current graph only creates basic file nodes, not entity/relationship extraction.
+1. Embeddings/Vectorize are not implemented.
+2. R2 bucket exists but object adapter/keys are not wired.
+3. Failed ingest jobs exist from earlier worker attempts; inspect before production cleanup.
+4. Token registry is volume JSON, not Postgres; okay for one Railway replica, not ideal for multi-replica.
+5. `/vault` is just a folder placeholder, not an encrypted secrets vault.
+6. Current search is file text search, not semantic search.
+7. Current graph only creates basic file nodes, not entity/relationship extraction.
+8. Source registry currently has V1 local_folder wiring only; GitHub/Telegram/Slack/Notion/Linear/Drive/R2 adapter runners are not implemented yet.
 
 ## 14. Acceptance criteria for next handoff
 

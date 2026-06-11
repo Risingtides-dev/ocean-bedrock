@@ -10,6 +10,7 @@
     "token:create": "node scripts/issue-token.mjs",
     "ocean:bootstrap": "node scripts/ocean-bootstrap.mjs",
     "ocean:ingest": "node scripts/ocean-ingest-local.mjs",
+    "ocean:app": "node scripts/ocean-local-app.mjs",
     "ocean:worker": "node scripts/ocean-ingest-worker.mjs",
     "mcp": "node scripts/ocean-bedrock-mcp.mjs",
     "db:check": "node scripts/check-postgres.mjs",

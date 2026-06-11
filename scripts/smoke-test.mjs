@@ -6,6 +6,9 @@ import { promises as fs } from 'node:fs';
 import { createOceanBedrockServer } from '../src/server.mjs';
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ocean-bedrock-smoke-'));
+const sourceRegistryDatabaseUrl = process.env.DATABASE_URL || null;
+// Keep the local HTTP smoke fully ephemeral. DB-backed schema checks are read-only below.
+delete process.env.DATABASE_URL;
 process.env.OCEAN_BEDROCK_BOOTSTRAP_TOKEN = 'smoke-admin-token';
 process.env.OCEAN_LEDGER_STORE = 'jsonl';
 
@@ -15,6 +18,51 @@ await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const address = server.address();
 const base = `http://127.0.0.1:${address.port}`;
 const token = 'smoke-admin-token';
+
+async function verifySourceAdapterTables(databaseUrl) {
+  if (!databaseUrl) return null;
+  const { Pool } = await import('pg');
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    const result = await pool.query(`
+      SELECT
+        to_regclass('longhouse.source_adapters') AS source_adapters_table,
+        to_regclass('longhouse.source_instances') AS source_instances_table,
+        to_regclass('longhouse.source_streams') AS source_streams_table,
+        to_regclass('longhouse.source_sync_runs') AS source_sync_runs_table,
+        to_regclass('longhouse.source_records') AS source_records_table
+    `);
+    const row = result.rows[0];
+    const ready = Boolean(
+      row.source_adapters_table
+      && row.source_instances_table
+      && row.source_streams_table
+      && row.source_sync_runs_table
+      && row.source_records_table,
+    );
+    let adapters = 0;
+    if (ready) {
+      const count = await pool.query(`
+        SELECT count(*)::int AS count
+        FROM longhouse.source_adapters
+        WHERE id = ANY($1::text[])
+      `, [[
+        'local_folder',
+        'github',
+        'telegram',
+        'slack',
+        'notion',
+        'linear',
+        'google_drive',
+        'r2',
+      ]]);
+      adapters = count.rows[0]?.count || 0;
+    }
+    return { ready, adapters };
+  } finally {
+    await pool.end();
+  }
+}
 
 async function api(pathname, options = {}) {
   const response = await fetch(`${base}${pathname}`, {
@@ -88,6 +136,10 @@ try {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name: 'smoke-agent', role: 'agent', scopes: ['/docs'], ttlDays: 1 }),
   });
+  const sourceRegistry = await verifySourceAdapterTables(sourceRegistryDatabaseUrl);
+  if (sourceRegistry && (!sourceRegistry.ready || sourceRegistry.adapters !== 8)) {
+    throw new Error(`source adapter schema check failed: ${JSON.stringify(sourceRegistry)}`);
+  }
   console.log('ocean-bedrock smoke test passed');
 } finally {
   await new Promise((resolve) => server.close(resolve));

@@ -509,8 +509,65 @@ Status:
 
 ```txt
 research complete
-implementation not started
-next migration should be db/003_source_adapters.sql
+implemented in db/003_source_adapters.sql and src/sources.mjs
+local_folder bootstrap/ingest wiring live
+```
+
+### Source adapter registry implementation
+
+Added migration and helper layer:
+
+```txt
+db/003_source_adapters.sql
+src/sources.mjs
+```
+
+Tables added/applied to Railway Postgres:
+
+```txt
+longhouse.source_adapters
+longhouse.source_instances
+longhouse.source_streams
+longhouse.source_sync_runs
+longhouse.source_records
+```
+
+Seeded adapters:
+
+```txt
+local_folder
+github
+telegram
+slack
+notion
+linear
+google_drive
+r2
+```
+
+Updated scripts:
+
+```txt
+scripts/migrate.mjs              now applies db/003 by default
+scripts/check-postgres.mjs       verifies source tables + 8 seeded adapters
+scripts/ocean-bootstrap.mjs      writes source_instance/source_stream when DATABASE_URL exists
+scripts/ocean-ingest-local.mjs   writes source_sync_run/source_record and object_id lineage when DATABASE_URL exists
+scripts/smoke-test.mjs           keeps local smoke ephemeral, then read-only verifies source adapter tables when DATABASE_URL exists
+```
+
+Verification:
+
+```txt
+npm run db:migrate -- --yes   passed
+npm run db:check              schemaReady=true, sourceAdaptersSeeded=8
+npm run smoke                 passed
+local_folder registry smoke   bootstrap enabled, ingest enabled, source_record linked to object_id
+```
+
+Operational note:
+
+```txt
+operator-contributor token was rotated after implementation testing; old token id tok_83b7ebc4e643 revoked, replacement stored in /root/.config/ocean-bedrock/operator-contributor-token.txt
 ```
 
 ### Wiki/handoff/dev-log docs
@@ -531,6 +588,43 @@ Intent:
 docs/WIKI.md     stable operational/project wiki
 docs/HANDOFF.md  next-agent/operator handoff packet
 docs/DEV-LOG.md  chronological build and deployment log
+```
+
+### Local GUI companion app V0
+
+Added a simple local GUI app:
+
+```txt
+scripts/ocean-local-app.mjs
+docs/LOCAL-GUI-APP.md
+package.json script: npm run ocean:app
+```
+
+Intent:
+
+```txt
+coworker opens local app -> pastes scoped token once -> chooses folders -> chooses manual/scheduled sync
+```
+
+Current V0 behavior:
+
+```txt
+binds to 127.0.0.1:8765
+opens browser automatically
+stores ~/.config/ocean-bedrock/bootstrap.json with 0600 permissions
+supports native folder picker where available
+runs existing ocean-ingest-local.mjs for sync
+supports manual sync and interval schedule while app is open
+shows selected folders, run output, and recent activity
+```
+
+Limitations:
+
+```txt
+not packaged as a double-click desktop app yet
+schedules only run while app process is open
+server-side source registry API endpoints are still needed so coworker devices do not require DATABASE_URL for source_* lineage
+non-local integrations are placeholders in the UI
 ```
 
 ## Current tests/run evidence
@@ -570,14 +664,22 @@ GET /health  ok true
 
 ```json
 {
-  "objects": [{ "kind": "file", "count": 7 }],
-  "chunks": [{ "count": 5 }],
+  "objects": [{ "kind": "file", "count": 19 }],
+  "chunks": [{ "count": 17 }],
   "jobs": [
-    { "status": "done", "count": 5 },
-    { "status": "failed", "count": 5 }
+    { "status": "done", "count": 17 },
+    { "status": "failed", "count": 9 }
   ],
-  "ledgerEvents": [{ "count": 27 }],
-  "graphNodes": [{ "node_type": "file", "count": 5 }]
+  "ledgerEvents": [{ "count": 89 }],
+  "graphNodes": [{ "node_type": "file", "count": 17 }],
+  "sourceAdapters": [{ "count": 8 }],
+  "sourceInstances": [{ "count": 6 }],
+  "sourceStreams": [{ "count": 6 }],
+  "sourceSyncRuns": [
+    { "status": "cancelled", "count": 3 },
+    { "status": "completed", "count": 2 }
+  ],
+  "sourceRecords": [{ "count": 2 }]
 }
 ```
 
@@ -588,7 +690,7 @@ GET /health  ok true
   "embedding_provider": "none",
   "embedding_model": "text-chunk-v1",
   "dimensions": 0,
-  "count": 5,
+  "count": 17,
   "vectorized": 0
 }
 ```
@@ -637,34 +739,28 @@ Reason:
 ## Known open gaps
 
 ```txt
-source adapter tables not implemented
-local ingest not yet writing source_* tables
 no real embeddings
 no Vectorize upsert/search
 no R2 object bytes adapter
-no GitHub/Telegram/Slack/Notion/Linear adapters
+no GitHub/Telegram/Slack/Notion/Linear adapter runners yet
 no automatic local watcher daemon
 no encrypted vault/secrets manager
 failed ingest jobs need inspection/cleanup
-all files currently untracked in git
+source registry is V1 local_folder wiring only
 ```
 
 ## Next development sequence
 
 Recommended sequence:
 
-1. Review repo for secrets.
-2. Commit current baseline.
-3. Add `db/003_source_adapters.sql`.
-4. Add source adapter helper module.
-5. Wire local bootstrap/ingest into source adapter tables.
-6. Add embeddings client.
-7. Add Vectorize upsert fields/state.
-8. Add semantic search endpoint and MCP tool.
-9. Add GitHub adapter.
-10. Add Telegram adapter.
-11. Add R2 adapter or decide volume-first remains acceptable for V1.
-12. Perform security review before real coworker rollout.
+1. Commit source adapter registry implementation.
+2. Add embeddings client.
+3. Add Vectorize upsert fields/state.
+4. Add semantic search endpoint and MCP tool.
+5. Add GitHub adapter using the source registry.
+6. Add Telegram adapter using the source registry.
+7. Add R2 adapter or decide volume-first remains acceptable for V1.
+8. Perform security review before real coworker rollout.
 
 ## Quick command appendix
 

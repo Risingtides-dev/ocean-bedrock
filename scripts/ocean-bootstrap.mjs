@@ -5,6 +5,11 @@ import { promises as fs } from 'node:fs';
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import crypto from 'node:crypto';
+import {
+  ensureSourceAdapters,
+  upsertSourceInstance,
+  upsertSourceStream,
+} from '../src/sources.mjs';
 
 const DEFAULT_CONFIG_DIR = path.join(os.homedir(), '.config', 'ocean-bedrock');
 const DEFAULT_CONFIG_FILE = path.join(DEFAULT_CONFIG_DIR, 'bootstrap.json');
@@ -134,6 +139,66 @@ function sourceIdFor(folder, name, device) {
   return `src_${crypto.createHash('sha256').update(`${name}:${device}:${folder}`).digest('hex').slice(0, 12)}`;
 }
 
+async function registerSourceRegistry(config, nameSlug, deviceSlug) {
+  if (!process.env.DATABASE_URL) return { enabled: false, reason: 'DATABASE_URL is not set' };
+
+  const correlationId = `cor-bootstrap-${nameSlug}-${deviceSlug}`;
+  try {
+    await ensureSourceAdapters();
+    const instance = await upsertSourceInstance(null, {
+      adapter_id: 'local_folder',
+      name: `${nameSlug}-${deviceSlug}`,
+      owner_name: config.ownerName,
+      owner_token_id: null,
+      remote_prefix: config.remoteRoot,
+      config: {
+        device: config.deviceName,
+        device_slug: config.deviceSlug,
+        feed_mode: config.feedMode,
+        allowed_extensions: config.allowedExtensions,
+        ignore: config.defaultIgnores,
+        max_file_bytes: config.maxFileBytes,
+        source_count: config.sources.length,
+      },
+      secret_ref: null,
+      clearance: 'CONFIDENTIAL',
+      correlationId,
+    });
+
+    const streams = [];
+    for (const source of config.sources) {
+      const stream = await upsertSourceStream(null, {
+        source_instance_id: instance.id,
+        stream_key: source.id,
+        stream_type: 'folder',
+        remote_prefix: source.remotePrefix,
+        selection: {
+          label: source.label,
+          local_path: source.localPath,
+          enabled: source.enabled,
+          recursive: true,
+        },
+        cursor: {},
+        correlationId,
+      });
+      source.sourceInstanceId = instance.id;
+      source.sourceStreamId = stream.id;
+      streams.push({ sourceId: source.id, streamId: stream.id });
+    }
+
+    config.sourceRegistry = {
+      adapterId: 'local_folder',
+      sourceInstanceId: instance.id,
+      correlationId,
+      registeredAt: new Date().toISOString(),
+    };
+
+    return { enabled: true, instanceId: instance.id, streams };
+  } catch (error) {
+    return { enabled: false, error: error.message };
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -201,6 +266,9 @@ async function main() {
     body: JSON.stringify({ path: '/context/ocean-bedrock/sources' }),
   });
 
+  const sourceRegistry = await registerSourceRegistry(config, nameSlug, deviceSlug);
+  if (sourceRegistry.error) console.warn(`Source registry skipped: ${sourceRegistry.error}`);
+
   const publicConfig = { ...config, token: '[redacted]' };
   await api(config, `/api/v1/file?path=${encodeURIComponent(`/context/ocean-bedrock/sources/${nameSlug}-${deviceSlug}.json`)}`, {
     method: 'PUT',
@@ -240,6 +308,7 @@ async function main() {
     configPath,
     envPath,
     sources: publicConfig.sources,
+    sourceRegistry,
     next: `npm run ocean:ingest -- --config ${configPath}`,
   }, null, 2));
 }

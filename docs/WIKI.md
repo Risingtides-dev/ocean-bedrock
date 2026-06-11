@@ -248,7 +248,15 @@ ocean-bedrock://handoffs
 
 Coworkers must explicitly choose local folders to feed into the knowledge layer.
 
-Bootstrap:
+Local GUI app:
+
+```bash
+npm run ocean:app
+```
+
+This starts a localhost companion UI where coworkers can paste a scoped token, choose folders, run sync manually, and choose an interval schedule while the app is open. Details: `docs/LOCAL-GUI-APP.md`.
+
+Bootstrap CLI:
 
 ```bash
 export OCEAN_BEDROCK_URL='https://ocean-bedrock-production.up.railway.app'
@@ -308,12 +316,17 @@ file write
 Current verified index state:
 
 ```txt
-objects recorded:      7 files
-indexed chunks:        5
-graph file nodes:      5
-ledger events:         27
-ingest jobs done:      5
-ingest jobs failed:    5
+objects recorded:      19 files
+indexed chunks:        17
+graph file nodes:      17
+ledger events:         89
+ingest jobs done:      17
+ingest jobs failed:    9
+source adapters:       8 seeded
+source instances:      6
+source streams:        6
+source sync runs:      2 completed, 3 cancelled debug runs
+source records:        2
 ```
 
 Current chunking model:
@@ -332,7 +345,7 @@ YES: file intake, metadata, jobs, worker, text chunking, chunk index, basic grap
 NO:  real embeddings, Vectorize upserts, semantic/vector search, entity extraction
 ```
 
-## 10. Source adapter direction
+## 10. Source adapter registry
 
 The precedent research is documented in:
 
@@ -356,10 +369,21 @@ Lineage target:
 source_instance -> source_stream -> source_record -> object -> chunks -> graph -> ledger
 ```
 
+Current source adapter registry status:
+
+```txt
+schema:          live in Postgres via db/003_source_adapters.sql
+seeded adapters: local_folder, github, telegram, slack, notion, linear, google_drive, r2
+helper module:   src/sources.mjs
+local bootstrap: creates/updates source_instance + source_stream when DATABASE_URL is available
+local ingest:    creates source_sync_run and source_record rows for uploaded files
+smoke status:    verified with operator-contributor contributor token; source_record links to object_id
+```
+
 Current sources actually implemented:
 
 ```txt
-local_folder via ocean-bootstrap + ocean-ingest-local
+local_folder via ocean-bootstrap + ocean-ingest-local + source registry lineage
 direct HTTP/MCP writes
 ```
 
@@ -389,6 +413,11 @@ longhouse.graph_edges
 longhouse.ingest_jobs
 longhouse.ledger_events
 longhouse.context_snapshots
+longhouse.source_adapters
+longhouse.source_instances
+longhouse.source_streams
+longhouse.source_sync_runs
+longhouse.source_records
 ```
 
 The exact migrations currently in repo:
@@ -396,11 +425,6 @@ The exact migrations currently in repo:
 ```txt
 db/001_longhouse_core.sql
 db/002_ocean_ledger.sql
-```
-
-Planned next migration:
-
-```txt
 db/003_source_adapters.sql
 ```
 
@@ -489,12 +513,10 @@ Rules:
 
 Immediate next work:
 
-1. Add `db/003_source_adapters.sql`.
-2. Wire existing local folder bootstrap/ingest into source adapter tables.
-3. Add Cloudflare Workers AI embeddings.
-4. Upsert chunks into `ocean-longhouse-context` Vectorize.
-5. Add semantic search endpoint and MCP tool.
-6. Add R2 adapter for canonical object bytes.
-7. Add GitHub and Telegram adapters first.
-8. Add Notion/Linear/Slack after secret handling and source adapter registry are stable.
-9. Add final coworker security review and install guide.
+1. Add Cloudflare Workers AI embeddings.
+2. Upsert chunks into `ocean-longhouse-context` Vectorize.
+3. Add semantic search endpoint and MCP tool.
+4. Add R2 adapter for canonical object bytes.
+5. Add GitHub and Telegram adapters first using the source registry tables.
+6. Add Notion/Linear/Slack after secret handling and adapter-specific source policies are stable.
+7. Add final coworker security review and install guide.
