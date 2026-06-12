@@ -369,8 +369,9 @@ Implementation status:
 db/003_source_adapters.sql applied to Railway Postgres
 8 adapter definitions seeded
 src/sources.mjs helper module added
-scripts/ocean-bootstrap.mjs writes source_instance/source_stream when DATABASE_URL is available
-scripts/ocean-ingest-local.mjs writes source_sync_run/source_record and object_id lineage when DATABASE_URL is available
+server exposes /api/v1/sources/* and /api/v1/sync/* lineage endpoints
+scripts/ocean-bootstrap.mjs writes/redacts source manifests and can directly seed registry when run by operator
+scripts/ocean-ingest-local.mjs writes source_sync_run/source_record lineage through HTTP, no local DATABASE_URL required
 ```
 
 Verified smoke:
@@ -383,13 +384,14 @@ source_record created and linked to longhouse.objects.id
 
 ## 11. Next work queue
 
-### Priority 1 — Commit source adapter registry
+### Priority 1 — Deploy source/sync API
 
-- Review changed source-registry files.
+- Review changed source/sync API files.
 - Ensure no secrets are committed.
 - Confirm `npm run smoke` passes.
 - Confirm `npm run db:check` reports source tables and 8 seeded adapters.
-- Commit source registry implementation.
+- Deploy to Railway.
+- Run one live local GUI sync with a scoped contributor token and confirm source records/sync run rows.
 
 ### Priority 2 — Embeddings and Vectorize
 

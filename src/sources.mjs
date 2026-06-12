@@ -541,6 +541,7 @@ export async function upsertSourceStream(db, stream) {
  * @param {object} run
  * @param {string} run.source_instance_id
  * @param {string} [run.stream_id] — optional, null for instance-level runs
+ * @param {object} [run.metadata]
  * @param {string} [run.correlationId]
  * @returns {Promise<{id: string, source_instance_id: string, status: string, started_at: string}>}
  */
@@ -553,10 +554,10 @@ export async function createSourceSyncRun(db, run) {
 
   const result = await db.query(
     `INSERT INTO longhouse.source_sync_runs
-       (source_instance_id, stream_id, status, started_at)
-     VALUES ($1, $2::uuid, 'running', $3)
-     RETURNING id, source_instance_id, stream_id, status, started_at`,
-    [run.source_instance_id, run.stream_id || null, startedAt],
+       (source_instance_id, stream_id, status, started_at, metadata)
+     VALUES ($1, $2::uuid, 'running', $3, $4::jsonb)
+     RETURNING id, source_instance_id, stream_id, status, started_at, metadata`,
+    [run.source_instance_id, run.stream_id || null, startedAt, JSON.stringify(run.metadata || {})],
   );
 
   const row = result.rows[0];
@@ -584,8 +585,10 @@ export async function createSourceSyncRun(db, run) {
   return {
     id: row.id,
     source_instance_id: row.source_instance_id,
+    stream_id: row.stream_id,
     status: row.status,
     started_at: row.started_at,
+    metadata: row.metadata || {},
   };
 }
 
@@ -778,7 +781,7 @@ export async function getSourceInstance(db, id) {
   if (!db) throw new Error('DATABASE_URL is required for source adapter operations.');
 
   const result = await db.query(
-    `SELECT si.*, sa.display_name AS adapter_display_name, sa.capabilities
+    `SELECT si.*, sa.display_name AS adapter_display_name, sa.capabilities, sa.config_schema, sa.stream_schema
      FROM longhouse.source_instances si
      LEFT JOIN longhouse.source_adapters sa ON sa.id = si.adapter_id
      WHERE si.id = $1`,
@@ -786,4 +789,298 @@ export async function getSourceInstance(db, id) {
   );
 
   return result.rows[0] || null;
+}
+
+// ---------------------------------------------------------------------------
+// API-facing query/update helpers
+// ---------------------------------------------------------------------------
+
+function requirePool(db) {
+  const pool = db || getPool();
+  if (!pool) throw new Error('DATABASE_URL is required for source adapter operations.');
+  return pool;
+}
+
+function positiveLimit(value, fallback = 200, max = 1000) {
+  const number = Number(value || fallback);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(1, Math.min(Math.floor(number), max));
+}
+
+function addOptionalFilter(where, values, column, value, cast = '') {
+  if (value === undefined || value === null || value === '') return;
+  values.push(value);
+  where.push(`${column} = $${values.length}${cast}`);
+}
+
+export async function listSourceAdapters(db, filters = {}) {
+  const pool = requirePool(db);
+  const where = [];
+  const values = [];
+  addOptionalFilter(where, values, 'enabled', filters.enabled, '::boolean');
+  const result = await pool.query(
+    `SELECT *
+     FROM longhouse.source_adapters
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY id`,
+    values,
+  );
+  return result.rows;
+}
+
+export async function listSourceInstances(db, filters = {}) {
+  const pool = requirePool(db);
+  const where = [];
+  const values = [];
+  addOptionalFilter(where, values, 'si.adapter_id', filters.adapter_id || filters.adapterId);
+  addOptionalFilter(where, values, 'si.owner_name', filters.owner_name || filters.ownerName);
+  addOptionalFilter(where, values, 'si.status', filters.status);
+  addOptionalFilter(where, values, 'si.enabled', filters.enabled, '::boolean');
+  values.push(positiveLimit(filters.limit));
+  const limitParam = values.length;
+  const result = await pool.query(
+    `SELECT si.*, sa.display_name AS adapter_display_name, sa.capabilities, sa.config_schema, sa.stream_schema
+     FROM longhouse.source_instances si
+     LEFT JOIN longhouse.source_adapters sa ON sa.id = si.adapter_id
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY si.updated_at DESC, si.created_at DESC
+     LIMIT $${limitParam}`,
+    values,
+  );
+  return result.rows;
+}
+
+export async function updateSourceInstance(db, id, patch = {}) {
+  const pool = requirePool(db);
+  const sets = [];
+  const values = [id];
+  const assigned = new Set();
+
+  function setColumn(inputKey, column, transform = (value) => value) {
+    if (!(inputKey in patch) || assigned.has(column)) return;
+    assigned.add(column);
+    values.push(transform(patch[inputKey]));
+    sets.push(`${column} = $${values.length}`);
+  }
+
+  setColumn('name', 'name', (value) => String(value).trim());
+  setColumn('owner_name', 'owner_name');
+  setColumn('ownerName', 'owner_name');
+  setColumn('owner_token_id', 'owner_token_id');
+  setColumn('ownerTokenId', 'owner_token_id');
+  setColumn('remote_prefix', 'remote_prefix');
+  setColumn('remotePrefix', 'remote_prefix');
+  if ('config' in patch) {
+    values.push(JSON.stringify(patch.config || {}));
+    sets.push(`config = config || $${values.length}::jsonb`);
+  }
+  setColumn('secret_ref', 'secret_ref');
+  setColumn('secretRef', 'secret_ref');
+  setColumn('clearance', 'clearance');
+  setColumn('status', 'status');
+  setColumn('enabled', 'enabled', Boolean);
+
+  if (!sets.length) return getSourceInstance(pool, id);
+  sets.push('updated_at = now()');
+
+  const result = await pool.query(
+    `UPDATE longhouse.source_instances
+     SET ${sets.join(', ')}
+     WHERE id = $1
+     RETURNING *`,
+    values,
+  );
+  if (!result.rows.length) throw new Error(`Source instance not found: ${id}`);
+  const row = result.rows[0];
+
+  await emitSourceEvent({
+    eventType: 'source.instance.updated',
+    sourceId: `${row.adapter_id}:${row.name}`,
+    virtualPath: row.remote_prefix,
+    payload: { source_instance_id: row.id, patch_keys: Object.keys(patch) },
+    correlationId: patch.correlationId || patch.correlation_id || null,
+    adapterId: row.adapter_id,
+  });
+
+  return getSourceInstance(pool, id);
+}
+
+export async function listSourceStreams(db, filters = {}) {
+  const pool = requirePool(db);
+  const where = [];
+  const values = [];
+  addOptionalFilter(where, values, 'ss.source_instance_id', filters.source_instance_id || filters.sourceInstanceId, '::uuid');
+  addOptionalFilter(where, values, 'ss.stream_type', filters.stream_type || filters.streamType);
+  addOptionalFilter(where, values, 'ss.enabled', filters.enabled, '::boolean');
+  values.push(positiveLimit(filters.limit));
+  const limitParam = values.length;
+  const result = await pool.query(
+    `SELECT ss.*, si.adapter_id, si.name AS source_instance_name, si.owner_name, si.clearance AS source_clearance
+     FROM longhouse.source_streams ss
+     JOIN longhouse.source_instances si ON si.id = ss.source_instance_id
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY ss.updated_at DESC, ss.created_at DESC
+     LIMIT $${limitParam}`,
+    values,
+  );
+  return result.rows;
+}
+
+export async function getSourceStream(db, id) {
+  const pool = requirePool(db);
+  const result = await pool.query(
+    `SELECT ss.*, si.adapter_id, si.name AS source_instance_name, si.owner_name, si.clearance AS source_clearance
+     FROM longhouse.source_streams ss
+     JOIN longhouse.source_instances si ON si.id = ss.source_instance_id
+     WHERE ss.id = $1`,
+    [id],
+  );
+  return result.rows[0] || null;
+}
+
+export async function updateSourceStream(db, id, patch = {}) {
+  const pool = requirePool(db);
+  const sets = [];
+  const values = [id];
+  const assigned = new Set();
+
+  function setColumn(inputKey, column, transform = (value) => value) {
+    if (!(inputKey in patch) || assigned.has(column)) return;
+    assigned.add(column);
+    values.push(transform(patch[inputKey]));
+    sets.push(`${column} = $${values.length}`);
+  }
+
+  setColumn('stream_key', 'stream_key');
+  setColumn('streamKey', 'stream_key');
+  setColumn('stream_type', 'stream_type');
+  setColumn('streamType', 'stream_type');
+  setColumn('remote_prefix', 'remote_prefix');
+  setColumn('remotePrefix', 'remote_prefix');
+  if ('selection' in patch) {
+    values.push(JSON.stringify(patch.selection || {}));
+    sets.push(`selection = selection || $${values.length}::jsonb`);
+  }
+  if ('cursor' in patch) {
+    values.push(JSON.stringify(patch.cursor || {}));
+    sets.push(`cursor = cursor || $${values.length}::jsonb`);
+  }
+  setColumn('enabled', 'enabled', Boolean);
+
+  if (!sets.length) return getSourceStream(pool, id);
+  sets.push('updated_at = now()');
+
+  const result = await pool.query(
+    `UPDATE longhouse.source_streams
+     SET ${sets.join(', ')}
+     WHERE id = $1
+     RETURNING *`,
+    values,
+  );
+  if (!result.rows.length) throw new Error(`Source stream not found: ${id}`);
+  const row = result.rows[0];
+
+  await emitSourceEvent({
+    eventType: 'source.stream.updated',
+    sourceId: row.source_instance_id,
+    virtualPath: row.remote_prefix,
+    payload: { source_stream_id: row.id, source_instance_id: row.source_instance_id, patch_keys: Object.keys(patch) },
+    correlationId: patch.correlationId || patch.correlation_id || null,
+  });
+
+  return getSourceStream(pool, id);
+}
+
+export async function getSourceSyncRun(db, id) {
+  const pool = requirePool(db);
+  const result = await pool.query(
+    `SELECT sr.*, si.adapter_id, si.name AS source_instance_name, si.remote_prefix AS source_instance_remote_prefix, si.owner_name, si.clearance AS source_clearance
+     FROM longhouse.source_sync_runs sr
+     JOIN longhouse.source_instances si ON si.id = sr.source_instance_id
+     WHERE sr.id = $1`,
+    [id],
+  );
+  return result.rows[0] || null;
+}
+
+export async function listSourceSyncRuns(db, filters = {}) {
+  const pool = requirePool(db);
+  const where = [];
+  const values = [];
+  addOptionalFilter(where, values, 'sr.source_instance_id', filters.source_instance_id || filters.sourceInstanceId, '::uuid');
+  addOptionalFilter(where, values, 'sr.stream_id', filters.stream_id || filters.streamId, '::uuid');
+  addOptionalFilter(where, values, 'sr.status', filters.status);
+  values.push(positiveLimit(filters.limit));
+  const limitParam = values.length;
+  const result = await pool.query(
+    `SELECT sr.*, si.adapter_id, si.name AS source_instance_name, si.remote_prefix AS source_instance_remote_prefix, si.owner_name, si.clearance AS source_clearance
+     FROM longhouse.source_sync_runs sr
+     JOIN longhouse.source_instances si ON si.id = sr.source_instance_id
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY sr.started_at DESC
+     LIMIT $${limitParam}`,
+    values,
+  );
+  return result.rows;
+}
+
+export async function failSourceSyncRun(db, runId, stats = {}) {
+  const pool = requirePool(db);
+  const finishedAt = nowIso();
+  const result = await pool.query(
+    `UPDATE longhouse.source_sync_runs
+     SET status = 'failed',
+         finished_at = $2,
+         scanned_count = $3,
+         changed_count = $4,
+         uploaded_count = $5,
+         skipped_count = $6,
+         error_count = $7,
+         error = $8,
+         manifest_path = $9,
+         metadata = metadata || $10::jsonb
+     WHERE id = $1
+     RETURNING *`,
+    [
+      runId,
+      finishedAt,
+      stats.scanned_count || stats.scannedCount || 0,
+      stats.changed_count || stats.changedCount || 0,
+      stats.uploaded_count || stats.uploadedCount || 0,
+      stats.skipped_count || stats.skippedCount || 0,
+      stats.error_count || stats.errorCount || 1,
+      stats.error || 'Sync run failed.',
+      stats.manifest_path || stats.manifestPath || null,
+      JSON.stringify({ failedAt: finishedAt, ...(stats.metadata || {}) }),
+    ],
+  );
+  if (!result.rows.length) throw new Error(`Sync run not found: ${runId}`);
+  const row = result.rows[0];
+
+  const instResult = await pool.query(
+    'SELECT adapter_id, name FROM longhouse.source_instances WHERE id = $1',
+    [row.source_instance_id],
+  );
+  const instance = instResult.rows[0] || {};
+
+  await emitSourceEvent({
+    eventType: 'source.sync.failed',
+    sourceId: `${instance.adapter_id || '?'}:${instance.name || row.source_instance_id}`,
+    sourceSequence: `${runId}:failed`,
+    payload: {
+      sync_run_id: runId,
+      error: row.error,
+      error_count: row.error_count,
+      finished_at: finishedAt,
+    },
+    correlationId: stats.correlationId || stats.correlation_id || null,
+  });
+
+  return row;
+}
+
+export async function findObjectIdByVirtualPath(db, virtualPath) {
+  const pool = requirePool(db);
+  const result = await pool.query('SELECT id FROM longhouse.objects WHERE virtual_path = $1 LIMIT 1', [virtualPath]);
+  return result.rows[0]?.id || null;
 }

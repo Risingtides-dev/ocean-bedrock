@@ -191,6 +191,21 @@ POST   /api/v1/ledger/events
 GET    /api/v1/ledger/trace?correlation_id=...
 POST   /api/v1/ledger/snapshots
 GET    /api/v1/ledger/verify
+GET    /api/v1/sources/adapters
+GET    /api/v1/sources/instances
+POST   /api/v1/sources/instances
+GET    /api/v1/sources/instances/{id}
+PATCH  /api/v1/sources/instances/{id}
+GET    /api/v1/sources/streams
+POST   /api/v1/sources/streams
+PATCH  /api/v1/sources/streams/{id}
+GET    /api/v1/sync-runs/{id}
+POST   /api/v1/sync-runs
+POST   /api/v1/sync-runs/{id}/complete
+POST   /api/v1/sync-runs/{id}/fail
+POST   /api/v1/sync/local-folder/plan
+POST   /api/v1/sync/local-folder/records:batch
+POST   /api/v1/sync/local-folder/commit
 GET    /api/v1/locks
 POST   /api/v1/locks
 DELETE /api/v1/locks/{lockId}
@@ -375,15 +390,16 @@ Current source adapter registry status:
 schema:          live in Postgres via db/003_source_adapters.sql
 seeded adapters: local_folder, github, telegram, slack, notion, linear, google_drive, r2
 helper module:   src/sources.mjs
-local bootstrap: creates/updates source_instance + source_stream when DATABASE_URL is available
-local ingest:    creates source_sync_run and source_record rows for uploaded files
-smoke status:    verified with operator-contributor contributor token; source_record links to object_id
+HTTP API:        /api/v1/sources/* and /api/v1/sync/*
+local bootstrap: writes/redacts source manifests and can directly seed registry when run by operator
+local ingest:    uses server-side source/sync endpoints to create sync_run/source_record rows
+smoke status:    local smoke + db:check pass; live source record check should run after deploy
 ```
 
 Current sources actually implemented:
 
 ```txt
-local_folder via ocean-bootstrap + ocean-ingest-local + source registry lineage
+local_folder via ocean-bootstrap + ocean-ingest-local + server-side source registry lineage
 direct HTTP/MCP writes
 ```
 

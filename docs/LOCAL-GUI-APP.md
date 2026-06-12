@@ -33,6 +33,7 @@ npm run ocean:app -- --port 8766 --no-open
 - Lets the user choose local folders using a native folder picker when available.
 - Writes/refreshes a redacted source manifest in `/context/ocean-bedrock/sources`.
 - Runs `scripts/ocean-ingest-local.mjs` in the background for manual sync.
+- Uses server-side source/sync endpoints for lineage; coworker devices only need `serverUrl` + scoped bearer token.
 - Can run scheduled sync while the app is open.
 - Shows selected folders, latest run output, and recent app activity.
 
@@ -103,13 +104,13 @@ Do not give coworker devices admin tokens.
 
 - Not packaged as a double-click desktop app yet.
 - Scheduling only works while the app is open.
-- Source registry lineage over Postgres requires `DATABASE_URL`; normal coworker devices still sync bytes/manifests over HTTP only until server-side source registry API endpoints are added.
 - Non-local integrations are UI placeholders for now.
+- The server still owns the Postgres `DATABASE_URL`; if the server lacks it, lineage endpoints return unavailable while byte sync can still use the file API.
 
 ## Next improvements
 
 1. Package as a double-click desktop app using Electron/Tauri or a native wrapper.
 2. Add one-time invite links so coworkers never see raw long tokens.
-3. Add server-side source registry HTTP endpoints so coworker devices do not need `DATABASE_URL` for lineage.
-4. Add OS login/background scheduling for trusted devices.
-5. Add GitHub and Telegram integration cards backed by real adapter runners.
+3. Add OS login/background scheduling for trusted devices.
+4. Add GitHub and Telegram integration cards backed by real adapter runners.
+5. Add record delete/tombstone reporting for removed local files.

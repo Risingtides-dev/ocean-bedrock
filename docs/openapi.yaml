@@ -291,6 +291,162 @@ paths:
       summary: Verify local Ocean Ledger hash chain, admin only
       responses:
         '200': { description: Verification result }
+  /api/v1/sources/adapters:
+    get:
+      summary: List source adapter definitions
+      responses:
+        '200': { description: Source adapters }
+  /api/v1/sources/instances:
+    get:
+      summary: List source instances visible to the token
+      parameters:
+        - in: query
+          name: adapter_id
+          schema: { type: string }
+        - in: query
+          name: owner_name
+          schema: { type: string }
+        - in: query
+          name: status
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 200, maximum: 1000 }
+      responses:
+        '200': { description: Source instances }
+    post:
+      summary: Create or update a source instance
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [adapter_id, name, remote_prefix]
+              properties:
+                adapter_id: { type: string }
+                name: { type: string }
+                owner_name: { type: string }
+                remote_prefix: { type: string }
+                config: { type: object }
+                clearance: { type: string, enum: [PUBLIC, UNCLASSIFIED, CONFIDENTIAL, SECRET, TOP_SECRET], default: CONFIDENTIAL }
+      responses:
+        '201': { description: Source instance created or updated }
+  /api/v1/sources/instances/{id}:
+    get:
+      summary: Get source instance with streams and recent sync runs
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Source instance }
+    patch:
+      summary: Update source instance
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Updated source instance }
+  /api/v1/sources/streams:
+    get:
+      summary: List source streams visible to the token
+      responses:
+        '200': { description: Source streams }
+    post:
+      summary: Create or update a source stream
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_instance_id, stream_key, remote_prefix]
+              properties:
+                source_instance_id: { type: string }
+                stream_key: { type: string }
+                stream_type: { type: string, default: folder }
+                remote_prefix: { type: string }
+                selection: { type: object }
+                cursor: { type: object }
+      responses:
+        '201': { description: Source stream created or updated }
+  /api/v1/sources/streams/{id}:
+    patch:
+      summary: Update source stream
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Updated source stream }
+  /api/v1/sync-runs:
+    get:
+      summary: List source sync runs
+      responses:
+        '200': { description: Sync runs }
+    post:
+      summary: Start source sync run
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_instance_id]
+              properties:
+                source_instance_id: { type: string }
+                stream_id: { type: string }
+                metadata: { type: object }
+      responses:
+        '201': { description: Sync run started }
+  /api/v1/sync-runs/{id}:
+    get:
+      summary: Get source sync run
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Sync run }
+  /api/v1/sync-runs/{id}/complete:
+    post:
+      summary: Complete source sync run
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Sync run completed }
+  /api/v1/sync-runs/{id}/fail:
+    post:
+      summary: Mark source sync run failed
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Sync run failed }
+  /api/v1/sync/local-folder/plan:
+    post:
+      summary: Register local-folder source, streams, and start a sync run
+      responses:
+        '201': { description: Local folder sync plan }
+  /api/v1/sync/local-folder/records:batch:
+    post:
+      summary: Upsert local-folder source records in a batch
+      responses:
+        '200': { description: Batch upserted }
+        '207': { description: Batch partially upserted }
+  /api/v1/sync/local-folder/commit:
+    post:
+      summary: Commit local-folder sync run stats
+      responses:
+        '200': { description: Local folder sync committed }
   /api/v1/locks:
     get:
       summary: List active locks

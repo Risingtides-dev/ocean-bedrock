@@ -89,6 +89,99 @@ Same body as move, but copies recursively.
 
 Simple text search across scoped files. Large/binary files are skipped.
 
+## Source registry and sync runs
+
+Source registry endpoints are server-side Postgres-backed lineage APIs. Coworker devices should call these through Ocean Bedrock with their scoped bearer token; they should not receive `DATABASE_URL`.
+
+### `GET /api/v1/sources/adapters`
+
+Lists available source adapters such as `local_folder`, `github`, `telegram`, `slack`, `notion`, `linear`, `google_drive`, and `r2`.
+
+### `POST /api/v1/sources/instances`
+
+Creates or updates a configured source instance. The source `remote_prefix` must be inside the token's path scopes.
+
+```json
+{
+  "adapter_id": "local_folder",
+  "name": "alice-macbook",
+  "owner_name": "alice",
+  "remote_prefix": "/coworkers/alice/macbook",
+  "config": { "device": "macbook" },
+  "clearance": "CONFIDENTIAL"
+}
+```
+
+### `GET /api/v1/sources/instances`
+
+Lists source instances visible to the token. Optional filters: `adapter_id`, `owner_name`, `status`, `enabled`, `limit`.
+
+### `GET /api/v1/sources/instances/{id}`
+
+Returns one source instance with streams and recent sync runs.
+
+### `PATCH /api/v1/sources/instances/{id}`
+
+Updates mutable source instance fields such as `remote_prefix`, `config`, `status`, and `enabled`.
+
+### `POST /api/v1/sources/streams`
+
+Creates or updates a selected stream/resource under a source instance.
+
+```json
+{
+  "source_instance_id": "uuid",
+  "stream_key": "src_docs",
+  "stream_type": "folder",
+  "remote_prefix": "/coworkers/alice/macbook/docs",
+  "selection": { "label": "docs" }
+}
+```
+
+### `GET /api/v1/sources/streams`
+
+Lists streams visible to the token. Optional filters: `source_instance_id`, `stream_type`, `enabled`, `limit`.
+
+### `PATCH /api/v1/sources/streams/{id}`
+
+Updates mutable stream fields such as `remote_prefix`, `selection`, `cursor`, and `enabled`.
+
+### `POST /api/v1/sync-runs`
+
+Starts a sync run for a source instance.
+
+```json
+{ "source_instance_id": "uuid", "metadata": { "reason": "manual" } }
+```
+
+### `GET /api/v1/sync-runs/{id}`
+
+Returns sync run status and counters.
+
+### `POST /api/v1/sync-runs/{id}/complete`
+
+Completes a sync run with counters and an optional manifest path.
+
+### `POST /api/v1/sync-runs/{id}/fail`
+
+Marks a sync run failed with error details.
+
+## Local folder sync helper endpoints
+
+These are higher-level endpoints used by `scripts/ocean-ingest-local.mjs` and the local GUI companion app.
+
+### `POST /api/v1/sync/local-folder/plan`
+
+Registers/updates the local-folder source instance, creates streams, and starts a sync run.
+
+### `POST /api/v1/sync/local-folder/records:batch`
+
+Upserts file/message/source records after bytes are uploaded through `PUT /api/v1/file`.
+
+### `POST /api/v1/sync/local-folder/commit`
+
+Flushes final run stats and marks the sync run complete or failed.
+
 ## Ocean Ledger
 
 Ocean Ledger is append-only context history across files, messages, tickets, sessions, deploys, and other company events.

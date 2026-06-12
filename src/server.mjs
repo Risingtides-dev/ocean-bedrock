@@ -18,10 +18,29 @@ import {
 import {
   claimNextIngestJob,
   completeIngestJob,
+  getPool,
   processIngestJob,
   recordObjectDelete,
   recordObjectWrite,
 } from './metadata.mjs';
+import {
+  completeSourceSyncRun,
+  createSourceSyncRun,
+  failSourceSyncRun,
+  findObjectIdByVirtualPath,
+  getSourceInstance,
+  getSourceStream,
+  getSourceSyncRun,
+  listSourceAdapters,
+  listSourceInstances,
+  listSourceStreams,
+  listSourceSyncRuns,
+  updateSourceInstance,
+  updateSourceStream,
+  upsertSourceInstance,
+  upsertSourceRecord,
+  upsertSourceStream,
+} from './sources.mjs';
 
 export const VERSION = '0.1.0';
 
@@ -97,7 +116,7 @@ function textResponse(res, status, body, contentType = 'text/plain; charset=utf-
 function setCorsHeaders(req, res) {
   const origin = envValue('OCEAN_BEDROCK_CORS_ORIGIN', 'RT_NAS_CORS_ORIGIN', '*');
   res.setHeader('access-control-allow-origin', origin);
-  res.setHeader('access-control-allow-methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.setHeader('access-control-allow-headers', 'authorization,content-type,x-ocean-bedrock-token,x-ocean-bedrock-lock,x-rt-nas-token,x-rt-nas-lock,if-match,if-none-match');
   res.setHeader('access-control-max-age', '86400');
   const requestHeaders = req.headers['access-control-request-headers'];
@@ -639,6 +658,416 @@ async function search(state, principal, url) {
   return { q, path: basePath, limit, results };
 }
 
+function sourceDatabase() {
+  const db = getPool();
+  if (!db) throw new HttpError(503, 'Source registry requires DATABASE_URL on the Ocean Bedrock server.');
+  return db;
+}
+
+function camelOrSnake(body, snake, camel, fallback = undefined) {
+  if (body && body[snake] !== undefined) return body[snake];
+  if (body && body[camel] !== undefined) return body[camel];
+  return fallback;
+}
+
+function filterVisibleSourceRows(rows, principal, prefixKey = 'remote_prefix', clearanceKey = 'clearance') {
+  return rows.filter((row) => {
+    const prefix = row[prefixKey] || row.source_instance_remote_prefix || row.remotePrefix || '/';
+    const normalized = normalizeApiPath(prefix);
+    return pathInScopes(normalized, principal.scopes || ['/']) && clearanceAllowed(principal, row[clearanceKey] || row.source_clearance || 'CONFIDENTIAL');
+  });
+}
+
+function requireSourceRowVisible(row, principal, prefixKey = 'remote_prefix', clearanceKey = 'clearance') {
+  if (!row) throw new HttpError(404, 'Source resource not found.');
+  const prefix = normalizeApiPath(row[prefixKey] || row.source_instance_remote_prefix || row.remotePrefix || '/');
+  requirePathScope(principal, prefix);
+  requireClearance(principal, row[clearanceKey] || row.source_clearance || 'CONFIDENTIAL');
+}
+
+function normalizeOptionalPath(value) {
+  if (value === undefined || value === null || value === '') return null;
+  return normalizeApiPath(value);
+}
+
+function normalizeSourceStats(input = {}) {
+  return {
+    scanned_count: Number(input.scanned_count ?? input.scannedCount ?? input.scanned ?? 0),
+    changed_count: Number(input.changed_count ?? input.changedCount ?? input.changed ?? 0),
+    uploaded_count: Number(input.uploaded_count ?? input.uploadedCount ?? input.uploaded ?? 0),
+    skipped_count: Number(input.skipped_count ?? input.skippedCount ?? input.skipped ?? 0),
+    error_count: Number(input.error_count ?? input.errorCount ?? input.errors ?? 0),
+    error: input.error || null,
+    manifest_path: input.manifest_path || input.manifestPath || null,
+    metadata: input.metadata || {},
+    correlationId: input.correlationId || input.correlation_id || null,
+  };
+}
+
+function sourceInstancePayload(body, principal) {
+  const remotePrefix = normalizeApiPath(camelOrSnake(body, 'remote_prefix', 'remotePrefix'));
+  return {
+    adapter_id: camelOrSnake(body, 'adapter_id', 'adapterId', 'local_folder'),
+    name: String(body.name || '').trim(),
+    owner_name: camelOrSnake(body, 'owner_name', 'ownerName', principal.name),
+    owner_token_id: principal.role === 'admin'
+      ? camelOrSnake(body, 'owner_token_id', 'ownerTokenId', principal.id)
+      : principal.id,
+    remote_prefix: remotePrefix,
+    config: body.config || {},
+    secret_ref: camelOrSnake(body, 'secret_ref', 'secretRef', null),
+    clearance: body.clearance || 'CONFIDENTIAL',
+    correlationId: body.correlationId || body.correlation_id || null,
+  };
+}
+
+function sourceStreamPayload(body) {
+  return {
+    source_instance_id: camelOrSnake(body, 'source_instance_id', 'sourceInstanceId'),
+    stream_key: camelOrSnake(body, 'stream_key', 'streamKey'),
+    stream_type: camelOrSnake(body, 'stream_type', 'streamType', 'folder'),
+    remote_prefix: normalizeApiPath(camelOrSnake(body, 'remote_prefix', 'remotePrefix')),
+    selection: body.selection || {},
+    cursor: body.cursor || {},
+    correlationId: body.correlationId || body.correlation_id || null,
+  };
+}
+
+async function findSourceObjectId(db, virtualPath) {
+  try {
+    return await findObjectIdByVirtualPath(db, virtualPath);
+  } catch {
+    return null;
+  }
+}
+
+async function handleSourceAdapters(req, res, state, principal, url) {
+  requirePermission(principal, 'read');
+  const db = sourceDatabase();
+  const enabled = url.searchParams.has('enabled') ? url.searchParams.get('enabled') === 'true' : undefined;
+  jsonResponse(res, 200, { adapters: await listSourceAdapters(db, { enabled }) });
+}
+
+async function handleSourceInstances(req, res, state, principal, url) {
+  const db = sourceDatabase();
+
+  if (req.method === 'GET') {
+    requirePermission(principal, 'read');
+    const rows = await listSourceInstances(db, {
+      adapter_id: url.searchParams.get('adapter_id') || url.searchParams.get('adapterId'),
+      owner_name: url.searchParams.get('owner_name') || url.searchParams.get('ownerName'),
+      status: url.searchParams.get('status'),
+      enabled: url.searchParams.has('enabled') ? url.searchParams.get('enabled') === 'true' : undefined,
+      limit: url.searchParams.get('limit') || 200,
+    });
+    jsonResponse(res, 200, { sources: filterVisibleSourceRows(rows, principal) });
+    return;
+  }
+
+  if (req.method === 'POST') {
+    requirePermission(principal, 'write');
+    const body = await readJsonBody(req, state.maxJsonBytes);
+    const payload = sourceInstancePayload(body, principal);
+    if (!payload.name) throw new HttpError(400, 'name is required.');
+    requirePathScope(principal, payload.remote_prefix);
+    requireClearance(principal, payload.clearance);
+    const created = await upsertSourceInstance(db, payload);
+    const row = await getSourceInstance(db, created.id);
+    jsonResponse(res, 201, { source: row });
+    return;
+  }
+
+  notFound();
+}
+
+async function handleSourceInstanceById(req, res, state, principal, id) {
+  const db = sourceDatabase();
+  const current = await getSourceInstance(db, id);
+  requireSourceRowVisible(current, principal);
+
+  if (req.method === 'GET') {
+    requirePermission(principal, 'read');
+    const streams = filterVisibleSourceRows(await listSourceStreams(db, { source_instance_id: id }), principal);
+    const syncRuns = filterVisibleSourceRows(await listSourceSyncRuns(db, { source_instance_id: id, limit: 25 }), principal);
+    jsonResponse(res, 200, { source: current, streams, syncRuns });
+    return;
+  }
+
+  if (req.method === 'PATCH') {
+    requirePermission(principal, 'write');
+    const body = await readJsonBody(req, state.maxJsonBytes);
+    if (principal.role !== 'admin') {
+      delete body.owner_token_id;
+      delete body.ownerTokenId;
+    }
+    const nextPrefix = normalizeOptionalPath(camelOrSnake(body, 'remote_prefix', 'remotePrefix'));
+    if (nextPrefix) {
+      body.remote_prefix = nextPrefix;
+      delete body.remotePrefix;
+      requirePathScope(principal, nextPrefix);
+    }
+    if (body.clearance) requireClearance(principal, body.clearance);
+    const updated = await updateSourceInstance(db, id, body);
+    jsonResponse(res, 200, { source: updated });
+    return;
+  }
+
+  notFound();
+}
+
+async function handleSourceStreams(req, res, state, principal, url) {
+  const db = sourceDatabase();
+
+  if (req.method === 'GET') {
+    requirePermission(principal, 'read');
+    const rows = await listSourceStreams(db, {
+      source_instance_id: url.searchParams.get('source_instance_id') || url.searchParams.get('sourceInstanceId'),
+      stream_type: url.searchParams.get('stream_type') || url.searchParams.get('streamType'),
+      enabled: url.searchParams.has('enabled') ? url.searchParams.get('enabled') === 'true' : undefined,
+      limit: url.searchParams.get('limit') || 200,
+    });
+    jsonResponse(res, 200, { streams: filterVisibleSourceRows(rows, principal) });
+    return;
+  }
+
+  if (req.method === 'POST') {
+    requirePermission(principal, 'write');
+    const body = await readJsonBody(req, state.maxJsonBytes);
+    const payload = sourceStreamPayload(body);
+    if (!payload.source_instance_id) throw new HttpError(400, 'source_instance_id is required.');
+    if (!payload.stream_key) throw new HttpError(400, 'stream_key is required.');
+    const source = await getSourceInstance(db, payload.source_instance_id);
+    requireSourceRowVisible(source, principal);
+    requirePathScope(principal, payload.remote_prefix);
+    const created = await upsertSourceStream(db, payload);
+    const stream = await getSourceStream(db, created.id);
+    jsonResponse(res, 201, { stream });
+    return;
+  }
+
+  notFound();
+}
+
+async function handleSourceStreamById(req, res, state, principal, id) {
+  const db = sourceDatabase();
+  const current = await getSourceStream(db, id);
+  requireSourceRowVisible(current, principal);
+
+  if (req.method === 'PATCH') {
+    requirePermission(principal, 'write');
+    const body = await readJsonBody(req, state.maxJsonBytes);
+    const nextPrefix = normalizeOptionalPath(camelOrSnake(body, 'remote_prefix', 'remotePrefix'));
+    if (nextPrefix) {
+      body.remote_prefix = nextPrefix;
+      delete body.remotePrefix;
+      requirePathScope(principal, nextPrefix);
+    }
+    const updated = await updateSourceStream(db, id, body);
+    jsonResponse(res, 200, { stream: updated });
+    return;
+  }
+
+  notFound();
+}
+
+async function handleSyncRuns(req, res, state, principal, url) {
+  const db = sourceDatabase();
+
+  if (req.method === 'GET') {
+    requirePermission(principal, 'read');
+    const rows = await listSourceSyncRuns(db, {
+      source_instance_id: url.searchParams.get('source_instance_id') || url.searchParams.get('sourceInstanceId'),
+      stream_id: url.searchParams.get('stream_id') || url.searchParams.get('streamId'),
+      status: url.searchParams.get('status'),
+      limit: url.searchParams.get('limit') || 100,
+    });
+    jsonResponse(res, 200, { syncRuns: filterVisibleSourceRows(rows, principal, 'source_instance_remote_prefix', 'source_clearance') });
+    return;
+  }
+
+  if (req.method === 'POST') {
+    requirePermission(principal, 'write');
+    const body = await readJsonBody(req, state.maxJsonBytes);
+    const sourceInstanceId = camelOrSnake(body, 'source_instance_id', 'sourceInstanceId');
+    if (!sourceInstanceId) throw new HttpError(400, 'source_instance_id is required.');
+    const source = await getSourceInstance(db, sourceInstanceId);
+    requireSourceRowVisible(source, principal);
+    const streamId = camelOrSnake(body, 'stream_id', 'streamId', null);
+    if (streamId) {
+      const stream = await getSourceStream(db, streamId);
+      if (!stream || stream.source_instance_id !== sourceInstanceId) throw new HttpError(400, 'stream_id must belong to source_instance_id.');
+      requireSourceRowVisible(stream, principal);
+    }
+    const run = await createSourceSyncRun(db, {
+      source_instance_id: sourceInstanceId,
+      stream_id: streamId,
+      metadata: body.metadata || {},
+      correlationId: body.correlationId || body.correlation_id || null,
+    });
+    jsonResponse(res, 201, { syncRun: await getSourceSyncRun(db, run.id) });
+    return;
+  }
+
+  notFound();
+}
+
+async function handleSyncRunById(req, res, state, principal, id) {
+  const db = sourceDatabase();
+  const run = await getSourceSyncRun(db, id);
+  requireSourceRowVisible(run, principal, 'source_instance_remote_prefix', 'source_clearance');
+  requirePermission(principal, 'read');
+  jsonResponse(res, 200, { syncRun: run });
+}
+
+async function handleCompleteSyncRun(req, res, state, principal, id, failed = false) {
+  requirePermission(principal, 'write');
+  const db = sourceDatabase();
+  const run = await getSourceSyncRun(db, id);
+  requireSourceRowVisible(run, principal, 'source_instance_remote_prefix', 'source_clearance');
+  const body = await readJsonBody(req, state.maxJsonBytes);
+  const stats = normalizeSourceStats(body.stats || body);
+  if (stats.manifest_path) requirePathScope(principal, normalizeApiPath(stats.manifest_path));
+  const updated = failed
+    ? await failSourceSyncRun(db, id, stats)
+    : await completeSourceSyncRun(db, id, stats);
+  jsonResponse(res, 200, { syncRun: await getSourceSyncRun(db, updated.id) });
+}
+
+async function handleLocalFolderPlan(req, res, state, principal) {
+  requirePermission(principal, 'write');
+  const db = sourceDatabase();
+  const body = await readJsonBody(req, state.maxJsonBytes);
+  const ownerName = String(body.ownerName || body.owner_name || principal.name || 'coworker').trim();
+  const deviceName = String(body.deviceName || body.device_name || 'device').trim();
+  const ownerSlug = String(body.ownerSlug || body.owner_slug || ownerName).trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'coworker';
+  const deviceSlug = String(body.deviceSlug || body.device_slug || deviceName).trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'device';
+  const remoteRoot = normalizeApiPath(body.remoteRoot || body.remote_root || `/coworkers/${ownerSlug}/${deviceSlug}`);
+  requirePathScope(principal, remoteRoot);
+  const clearance = body.clearance || 'CONFIDENTIAL';
+  requireClearance(principal, clearance);
+  const correlationId = body.correlationId || body.correlation_id || `cor-ingest-${ownerSlug}-${deviceSlug}-${Date.now()}`;
+
+  const instanceResult = await upsertSourceInstance(db, {
+    adapter_id: 'local_folder',
+    name: body.name || `${ownerSlug}-${deviceSlug}`,
+    owner_name: ownerName,
+    owner_token_id: principal.id,
+    remote_prefix: remoteRoot,
+    config: {
+      device: deviceName,
+      device_slug: deviceSlug,
+      feed_mode: body.feedMode || body.feed_mode || null,
+      allowed_extensions: body.allowedExtensions ?? body.allowed_extensions ?? null,
+      ignore: body.defaultIgnores || body.default_ignores || [],
+      max_file_bytes: body.maxFileBytes || body.max_file_bytes || null,
+      source_count: Array.isArray(body.sources) ? body.sources.length : 0,
+      client: 'ocean-local-app',
+    },
+    clearance,
+    correlationId,
+  });
+  const sourceInstance = await getSourceInstance(db, instanceResult.id);
+
+  const streams = [];
+  for (const source of Array.isArray(body.sources) ? body.sources : []) {
+    if (source.enabled === false) continue;
+    const remotePrefix = normalizeApiPath(source.remotePrefix || source.remote_prefix || `${remoteRoot}/${source.label || source.id || 'folder'}`);
+    requirePathScope(principal, remotePrefix);
+    const created = await upsertSourceStream(db, {
+      source_instance_id: sourceInstance.id,
+      stream_key: source.id || source.stream_key || source.label || remotePrefix,
+      stream_type: 'folder',
+      remote_prefix: remotePrefix,
+      selection: {
+        label: source.label || null,
+        local_path_label: source.localPath ? path.basename(source.localPath) : null,
+        local_path_hash: source.localPath ? crypto.createHash('sha256').update(String(source.localPath)).digest('hex') : null,
+        enabled: source.enabled !== false,
+        recursive: true,
+      },
+      cursor: {},
+      correlationId,
+    });
+    streams.push(await getSourceStream(db, created.id));
+  }
+
+  const run = await createSourceSyncRun(db, {
+    source_instance_id: sourceInstance.id,
+    metadata: {
+      plan: 'local_folder',
+      ownerName,
+      deviceName,
+      source_count: streams.length,
+    },
+    correlationId,
+  });
+
+  jsonResponse(res, 201, { correlationId, sourceInstance, streams, syncRun: await getSourceSyncRun(db, run.id) });
+}
+
+async function handleLocalFolderRecordsBatch(req, res, state, principal) {
+  requirePermission(principal, 'write');
+  const db = sourceDatabase();
+  const body = await readJsonBody(req, state.maxJsonBytes);
+  const sourceInstanceId = camelOrSnake(body, 'source_instance_id', 'sourceInstanceId');
+  if (!sourceInstanceId) throw new HttpError(400, 'source_instance_id is required.');
+  const source = await getSourceInstance(db, sourceInstanceId);
+  requireSourceRowVisible(source, principal);
+  const records = Array.isArray(body.records) ? body.records : [];
+  if (!records.length) throw new HttpError(400, 'records must be a non-empty array.');
+  if (records.length > 500) throw new HttpError(400, 'records batch is limited to 500 records.');
+
+  let upserted = 0;
+  const errors = [];
+  const streamCache = new Map();
+  for (const record of records) {
+    try {
+      const virtualPath = normalizeOptionalPath(record.virtual_path || record.virtualPath);
+      if (virtualPath) requirePathScope(principal, virtualPath);
+      const streamId = record.stream_id || record.streamId || null;
+      if (streamId) {
+        if (!streamCache.has(streamId)) streamCache.set(streamId, await getSourceStream(db, streamId));
+        const stream = streamCache.get(streamId);
+        if (!stream || stream.source_instance_id !== sourceInstanceId) throw new HttpError(400, 'record stream_id must belong to source_instance_id.');
+        requireSourceRowVisible(stream, principal);
+      }
+      const objectId = record.object_id || record.objectId || (virtualPath ? await findSourceObjectId(db, virtualPath) : null);
+      await upsertSourceRecord(db, {
+        source_instance_id: sourceInstanceId,
+        stream_id: streamId,
+        source_record_id: record.source_record_id || record.sourceRecordId,
+        virtual_path: virtualPath,
+        object_id: objectId,
+        source_updated_at: record.source_updated_at || record.sourceUpdatedAt || null,
+        content_sha256: record.content_sha256 || record.contentSha256 || null,
+        metadata: record.metadata || {},
+        correlationId: body.correlationId || body.correlation_id || record.correlationId || record.correlation_id || null,
+      });
+      upserted += 1;
+    } catch (error) {
+      errors.push({ source_record_id: record.source_record_id || record.sourceRecordId || null, error: error.message });
+    }
+  }
+
+  jsonResponse(res, errors.length ? 207 : 200, { ok: errors.length === 0, upserted, errors });
+}
+
+async function handleLocalFolderCommit(req, res, state, principal) {
+  requirePermission(principal, 'write');
+  const db = sourceDatabase();
+  const body = await readJsonBody(req, state.maxJsonBytes);
+  const syncRunId = body.sync_run_id || body.syncRunId;
+  if (!syncRunId) throw new HttpError(400, 'sync_run_id is required.');
+  const run = await getSourceSyncRun(db, syncRunId);
+  requireSourceRowVisible(run, principal, 'source_instance_remote_prefix', 'source_clearance');
+  const stats = normalizeSourceStats(body.stats || body);
+  if (stats.manifest_path) requirePathScope(principal, normalizeApiPath(stats.manifest_path));
+  const updated = body.status === 'failed' || stats.error
+    ? await failSourceSyncRun(db, syncRunId, stats)
+    : await completeSourceSyncRun(db, syncRunId, stats);
+  jsonResponse(res, 200, { syncRun: await getSourceSyncRun(db, updated.id) });
+}
+
 async function seedDefaultFolders(state) {
   const folders = ['docs', 'context', 'sessions', 'handoffs', 'shared', 'vault'];
   for (const folder of folders) {
@@ -806,6 +1235,8 @@ export function createOceanBedrockServer(options = {}) {
           list: '/api/v1/list?path=/&depth=1',
           file: '/api/v1/file?path=/docs/README.md&inline=1',
           ledger: '/api/v1/ledger/events',
+          sources: '/api/v1/sources/adapters',
+          localFolderSync: '/api/v1/sync/local-folder/plan',
         },
         note: 'Most /api/v1 routes require Authorization: Bearer <token>.',
       });
@@ -1024,6 +1455,65 @@ export function createOceanBedrockServer(options = {}) {
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/v1/sources/adapters') {
+      await handleSourceAdapters(req, res, state, principal, url);
+      return;
+    }
+
+    if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/v1/sources/instances') {
+      await handleSourceInstances(req, res, state, principal, url);
+      return;
+    }
+
+    const sourceInstanceMatch = url.pathname.match(/^\/api\/v1\/sources\/instances\/([^/]+)$/);
+    if ((req.method === 'GET' || req.method === 'PATCH') && sourceInstanceMatch) {
+      await handleSourceInstanceById(req, res, state, principal, decodeURIComponent(sourceInstanceMatch[1]));
+      return;
+    }
+
+    if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/v1/sources/streams') {
+      await handleSourceStreams(req, res, state, principal, url);
+      return;
+    }
+
+    const sourceStreamMatch = url.pathname.match(/^\/api\/v1\/sources\/streams\/([^/]+)$/);
+    if (req.method === 'PATCH' && sourceStreamMatch) {
+      await handleSourceStreamById(req, res, state, principal, decodeURIComponent(sourceStreamMatch[1]));
+      return;
+    }
+
+    if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/v1/sync-runs') {
+      await handleSyncRuns(req, res, state, principal, url);
+      return;
+    }
+
+    const syncRunActionMatch = url.pathname.match(/^\/api\/v1\/sync-runs\/([^/]+)\/(complete|fail)$/);
+    if (req.method === 'POST' && syncRunActionMatch) {
+      await handleCompleteSyncRun(req, res, state, principal, decodeURIComponent(syncRunActionMatch[1]), syncRunActionMatch[2] === 'fail');
+      return;
+    }
+
+    const syncRunMatch = url.pathname.match(/^\/api\/v1\/sync-runs\/([^/]+)$/);
+    if (req.method === 'GET' && syncRunMatch) {
+      await handleSyncRunById(req, res, state, principal, decodeURIComponent(syncRunMatch[1]));
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/v1/sync/local-folder/plan') {
+      await handleLocalFolderPlan(req, res, state, principal);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/v1/sync/local-folder/records:batch') {
+      await handleLocalFolderRecordsBatch(req, res, state, principal);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/v1/sync/local-folder/commit') {
+      await handleLocalFolderCommit(req, res, state, principal);
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/v1/locks') {
       requirePermission(principal, 'read');
       const locks = await loadLocks(state);
@@ -1086,7 +1576,7 @@ export function createOceanBedrockServer(options = {}) {
   const server = http.createServer((req, res) => {
     router(req, res).catch((error) => {
       const status = error instanceof HttpError ? error.status : 500;
-      if (status >= 500) console.error('[ocean-bedrock] request failed', error);
+      if (status >= 500 && !(error instanceof HttpError)) console.error('[ocean-bedrock] request failed', error);
       if (!res.headersSent) {
         jsonResponse(res, status, {
           ok: false,
@@ -1104,7 +1594,7 @@ export function createOceanBedrockServer(options = {}) {
 
 export const createRtNasServer = createOceanBedrockServer;
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = Number(process.env.PORT || envValue('OCEAN_BEDROCK_PORT', 'RT_NAS_PORT', 8080));
   const host = envValue('OCEAN_BEDROCK_HOST', 'RT_NAS_HOST', process.env.HOST || '0.0.0.0');
   const { server, state, ready } = createOceanBedrockServer();

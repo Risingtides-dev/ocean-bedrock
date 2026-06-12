@@ -550,8 +550,8 @@ Updated scripts:
 ```txt
 scripts/migrate.mjs              now applies db/003 by default
 scripts/check-postgres.mjs       verifies source tables + 8 seeded adapters
-scripts/ocean-bootstrap.mjs      writes source_instance/source_stream when DATABASE_URL exists
-scripts/ocean-ingest-local.mjs   writes source_sync_run/source_record and object_id lineage when DATABASE_URL exists
+scripts/ocean-bootstrap.mjs      can write source_instance/source_stream directly when run with DATABASE_URL
+scripts/ocean-ingest-local.mjs   now uses server-side source/sync HTTP endpoints for lineage
 scripts/smoke-test.mjs           keeps local smoke ephemeral, then read-only verifies source adapter tables when DATABASE_URL exists
 ```
 
@@ -623,7 +623,7 @@ Limitations:
 ```txt
 not packaged as a double-click desktop app yet
 schedules only run while app process is open
-server-side source registry API endpoints are still needed so coworker devices do not require DATABASE_URL for source_* lineage
+source/sync lineage now depends on the server having DATABASE_URL configured
 non-local integrations are placeholders in the UI
 ```
 
@@ -736,6 +736,47 @@ Reason:
 - markdown files may be committed or shared,
 - token files stay outside repo.
 
+## 2026-06-12 — Server-side source/sync API
+
+Added server-owned source registry and sync-run endpoints so local/coworker devices no longer need direct Postgres credentials.
+
+New API routes:
+
+```txt
+GET    /api/v1/sources/adapters
+POST   /api/v1/sources/instances
+GET    /api/v1/sources/instances
+GET    /api/v1/sources/instances/{id}
+PATCH  /api/v1/sources/instances/{id}
+POST   /api/v1/sources/streams
+GET    /api/v1/sources/streams
+PATCH  /api/v1/sources/streams/{id}
+POST   /api/v1/sync-runs
+GET    /api/v1/sync-runs/{id}
+POST   /api/v1/sync-runs/{id}/complete
+POST   /api/v1/sync-runs/{id}/fail
+POST   /api/v1/sync/local-folder/plan
+POST   /api/v1/sync/local-folder/records:batch
+POST   /api/v1/sync/local-folder/commit
+```
+
+Updated local ingest:
+
+- `scripts/ocean-ingest-local.mjs` now plans lineage through `/api/v1/sync/local-folder/plan`.
+- Uploaded file records are batched through `/api/v1/sync/local-folder/records:batch`.
+- Final stats are committed through `/api/v1/sync/local-folder/commit`.
+- Coworker devices only need the Bedrock URL and scoped token; `DATABASE_URL` stays on the server.
+
+Verified locally:
+
+```txt
+node --check src/server.mjs
+node --check src/sources.mjs
+node --check scripts/ocean-ingest-local.mjs
+npm run smoke
+npm run db:check
+```
+
 ## Known open gaps
 
 ```txt
@@ -746,21 +787,22 @@ no GitHub/Telegram/Slack/Notion/Linear adapter runners yet
 no automatic local watcher daemon
 no encrypted vault/secrets manager
 failed ingest jobs need inspection/cleanup
-source registry is V1 local_folder wiring only
+source registry is V1 local_folder HTTP wiring only
 ```
 
 ## Next development sequence
 
 Recommended sequence:
 
-1. Commit source adapter registry implementation.
-2. Add embeddings client.
-3. Add Vectorize upsert fields/state.
-4. Add semantic search endpoint and MCP tool.
-5. Add GitHub adapter using the source registry.
-6. Add Telegram adapter using the source registry.
-7. Add R2 adapter or decide volume-first remains acceptable for V1.
-8. Perform security review before real coworker rollout.
+1. Deploy source/sync API implementation.
+2. Run one live local GUI sync with a scoped contributor token and confirm source records/sync run rows.
+3. Add embeddings client.
+4. Add Vectorize upsert fields/state.
+5. Add semantic search endpoint and MCP tool.
+6. Add GitHub adapter using the source registry.
+7. Add Telegram adapter using the source registry.
+8. Add R2 adapter or decide volume-first remains acceptable for V1.
+9. Perform security review before real coworker rollout.
 
 ## Quick command appendix
 

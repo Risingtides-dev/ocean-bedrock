@@ -3,15 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import crypto from 'node:crypto';
-import { getPool } from '../src/metadata.mjs';
-import {
-  ensureSourceAdapters,
-  upsertSourceInstance,
-  upsertSourceStream,
-  createSourceSyncRun,
-  completeSourceSyncRun,
-  upsertSourceRecord,
-} from '../src/sources.mjs';
 
 const DEFAULT_CONFIG_FILE = path.join(os.homedir(), '.config', 'ocean-bedrock', 'bootstrap.json');
 const DEFAULT_STATE_FILE = path.join(os.homedir(), '.local', 'state', 'ocean-bedrock', 'ingest-state.json');
@@ -160,71 +151,69 @@ function contentTypeFor(filePath) {
   return 'application/octet-stream';
 }
 
-async function findObjectIdByPath(db, virtualPath) {
-  const result = await db.query('SELECT id FROM longhouse.objects WHERE virtual_path = $1 LIMIT 1', [virtualPath]);
-  return result.rows[0]?.id || null;
-}
-
 async function startSourceRegistryRun(config, args) {
   if (args.dryRun) return { enabled: false, reason: 'dry-run' };
-  if (!process.env.DATABASE_URL) return { enabled: false, reason: 'DATABASE_URL is not set' };
-
-  const db = getPool();
-  if (!db) return { enabled: false, reason: 'DATABASE_URL is not set' };
 
   const ownerSlug = config.ownerSlug || slugify(config.ownerName);
   const deviceSlug = config.deviceSlug || slugify(config.deviceName);
   const correlationId = `cor-ingest-${ownerSlug}-${deviceSlug}-${Date.now()}`;
 
   try {
-    await ensureSourceAdapters(db);
-    const instance = await upsertSourceInstance(db, {
-      adapter_id: 'local_folder',
-      name: `${ownerSlug}-${deviceSlug}`,
-      owner_name: config.ownerName || ownerSlug,
-      owner_token_id: null,
-      remote_prefix: config.remoteRoot || `/coworkers/${ownerSlug}/${deviceSlug}`,
-      config: {
-        device: config.deviceName || deviceSlug,
-        device_slug: deviceSlug,
-        feed_mode: config.feedMode,
-        allowed_extensions: config.allowedExtensions,
-        ignore: config.defaultIgnores,
-        max_file_bytes: config.maxFileBytes,
-        source_count: (config.sources || []).length,
-      },
-      secret_ref: null,
-      clearance: 'CONFIDENTIAL',
-      correlationId,
+    const plan = await api(config, '/api/v1/sync/local-folder/plan', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ownerName: config.ownerName || ownerSlug,
+        ownerSlug,
+        deviceName: config.deviceName || deviceSlug,
+        deviceSlug,
+        remoteRoot: config.remoteRoot || `/coworkers/${ownerSlug}/${deviceSlug}`,
+        feedMode: config.feedMode,
+        allowedExtensions: config.allowedExtensions,
+        defaultIgnores: config.defaultIgnores,
+        maxFileBytes: config.maxFileBytes,
+        sources: config.sources || [],
+        clearance: 'CONFIDENTIAL',
+        correlationId,
+      }),
     });
 
     const streams = new Map();
-    for (const source of config.sources || []) {
-      const stream = await upsertSourceStream(db, {
-        source_instance_id: instance.id,
-        stream_key: source.id,
-        stream_type: 'folder',
-        remote_prefix: source.remotePrefix,
-        selection: {
-          label: source.label,
-          local_path: source.localPath,
-          enabled: source.enabled,
-          recursive: true,
-        },
-        cursor: {},
-        correlationId,
-      });
-      streams.set(source.id, stream);
+    for (const stream of plan.streams || []) {
+      streams.set(stream.stream_key, stream);
     }
 
-    const run = await createSourceSyncRun(db, {
-      source_instance_id: instance.id,
-      correlationId,
-    });
-
-    return { enabled: true, db, correlationId, instance, streams, run };
+    return {
+      enabled: true,
+      correlationId: plan.correlationId || correlationId,
+      instance: plan.sourceInstance,
+      streams,
+      run: plan.syncRun,
+      records: [],
+      batches: { sent: 0, records: 0 },
+    };
   } catch (error) {
     return { enabled: false, error: error.message };
+  }
+}
+
+async function flushSourceRecords(config, sourceRegistry) {
+  if (!sourceRegistry.enabled || !sourceRegistry.records?.length) return;
+  while (sourceRegistry.records.length) {
+    const batch = sourceRegistry.records.splice(0, 100);
+    const result = await api(config, '/api/v1/sync/local-folder/records:batch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        source_instance_id: sourceRegistry.instance.id,
+        sync_run_id: sourceRegistry.run.id,
+        correlationId: sourceRegistry.correlationId,
+        records: batch,
+      }),
+    });
+    if (result.ok === false) console.warn(`Source records batch had errors: ${JSON.stringify(result.errors || [])}`);
+    sourceRegistry.batches.sent += 1;
+    sourceRegistry.batches.records += batch.length;
   }
 }
 
@@ -325,31 +314,30 @@ async function main() {
           manifest.totals.bytesUploaded += stat.size;
 
           if (sourceRegistry.enabled) {
-            try {
-              const objectId = await findObjectIdByPath(sourceRegistry.db, remotePath);
-              await upsertSourceRecord(sourceRegistry.db, {
-                source_instance_id: sourceRegistry.instance.id,
-                stream_id: stream?.id || null,
-                source_record_id: `${source.id}:${toPosix(item.rel)}`,
-                virtual_path: remotePath,
-                object_id: objectId,
-                source_updated_at: stat.mtime.toISOString(),
-                content_sha256: hash,
-                metadata: {
-                  source_id: source.id,
-                  label: source.label,
-                  rel: toPosix(item.rel),
-                  local_path: root,
-                  size: stat.size,
-                  content_type: contentTypeFor(item.path),
-                },
-                correlationId: sourceRegistry.correlationId,
-              });
-              fileRecord.sourceRecordId = `${source.id}:${toPosix(item.rel)}`;
-              fileRecord.objectId = objectId;
-            } catch (registryError) {
-              fileRecord.sourceRegistryError = registryError.message;
-              console.warn(`Source record skipped for ${remotePath}: ${registryError.message}`);
+            const sourceRecordId = `${source.id}:${toPosix(item.rel)}`;
+            sourceRegistry.records.push({
+              stream_id: stream?.id || null,
+              source_record_id: sourceRecordId,
+              virtual_path: remotePath,
+              source_updated_at: stat.mtime.toISOString(),
+              content_sha256: hash,
+              metadata: {
+                source_id: source.id,
+                label: source.label,
+                rel: toPosix(item.rel),
+                local_path_label: path.basename(root),
+                size: stat.size,
+                content_type: contentTypeFor(item.path),
+              },
+            });
+            fileRecord.sourceRecordId = sourceRecordId;
+            if (sourceRegistry.records.length >= 100) {
+              try {
+                await flushSourceRecords(config, sourceRegistry);
+              } catch (registryError) {
+                fileRecord.sourceRegistryError = registryError.message;
+                console.warn(`Source records batch skipped: ${registryError.message}`);
+              }
             }
           }
 
@@ -407,19 +395,28 @@ async function main() {
     }
     if (sourceRegistry.enabled) {
       try {
-        await completeSourceSyncRun(sourceRegistry.db, sourceRegistry.run.id, {
-          scanned_count: manifest.totals.scanned,
-          changed_count: manifest.totals.changed,
-          uploaded_count: manifest.totals.uploaded,
-          skipped_count: manifest.totals.skipped,
-          error_count: manifest.totals.errors,
-          manifest_path: manifestPath,
-          correlationId: sourceRegistry.correlationId,
-          metadata: {
-            unchanged_count: manifest.totals.unchanged,
-            owner_name: config.ownerName,
-            device_name: config.deviceName,
-          },
+        await flushSourceRecords(config, sourceRegistry);
+        await api(config, '/api/v1/sync/local-folder/commit', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sync_run_id: sourceRegistry.run.id,
+            stats: {
+              scanned_count: manifest.totals.scanned,
+              changed_count: manifest.totals.changed,
+              uploaded_count: manifest.totals.uploaded,
+              skipped_count: manifest.totals.skipped,
+              error_count: manifest.totals.errors,
+              manifest_path: manifestPath,
+              metadata: {
+                unchanged_count: manifest.totals.unchanged,
+                owner_name: config.ownerName,
+                device_name: config.deviceName,
+                record_batches: sourceRegistry.batches,
+              },
+            },
+            correlationId: sourceRegistry.correlationId,
+          }),
         });
       } catch (registryError) {
         console.warn(`Source sync run completion skipped: ${registryError.message}`);
@@ -438,7 +435,7 @@ async function main() {
     statePath,
     manifestPath: args.dryRun ? null : manifestPath,
     sourceRegistry: sourceRegistry.enabled
-      ? { enabled: true, sourceInstanceId: sourceRegistry.instance.id, syncRunId: sourceRegistry.run.id }
+      ? { enabled: true, sourceInstanceId: sourceRegistry.instance.id, syncRunId: sourceRegistry.run.id, batches: sourceRegistry.batches }
       : { enabled: false, reason: sourceRegistry.reason || sourceRegistry.error || 'unavailable' },
     totals: manifest.totals,
     sources: manifest.sources,

@@ -14,6 +14,7 @@ This started from a “NAS” idea, but the canonical name for this service is n
 - Lock leases so agents can coordinate edits
 - Admin token issuing/revocation API
 - Audit log for writes, deletes, locks, and token changes
+- Server-side source registry and sync-run lineage APIs for local-folder ingest
 
 Default folders created on startup:
 
@@ -120,6 +121,8 @@ Agents should:
 - Week-one workflow: [`docs/OCEAN-BEDROCK-WEEK-ONE-WORKFLOW.md`](docs/OCEAN-BEDROCK-WEEK-ONE-WORKFLOW.md)
 - Week-one runbook: [`docs/WEEK-ONE-RUNBOOK.md`](docs/WEEK-ONE-RUNBOOK.md)
 - Coworker bootstrap: [`docs/COWORKER-BOOTSTRAP.md`](docs/COWORKER-BOOTSTRAP.md)
+- Local GUI companion app: [`docs/LOCAL-GUI-APP.md`](docs/LOCAL-GUI-APP.md)
+- Source adapter precedents: [`docs/SOURCE-ADAPTER-PRECEDENTS.md`](docs/SOURCE-ADAPTER-PRECEDENTS.md)
 - MCP wrapper: [`docs/MCP.md`](docs/MCP.md)
 - Ocean Longhouse architecture: [`docs/OCEAN-LONGHOUSE.md`](docs/OCEAN-LONGHOUSE.md)
 - Ocean Ledger context history: [`docs/OCEAN-LEDGER.md`](docs/OCEAN-LEDGER.md)
@@ -135,7 +138,7 @@ Agents should:
 | `OCEAN_BEDROCK_AUTH_FILE` | `$OCEAN_BEDROCK_ROOT/.ocean-bedrock/tokens.json` | Token registry |
 | `OCEAN_LEDGER_STORE` | `postgres` when `DATABASE_URL` is set, otherwise `jsonl` | Ocean Ledger store: `jsonl` or `postgres` |
 | `OCEAN_LEDGER_FILE` | `$OCEAN_BEDROCK_ROOT/.ocean-bedrock/ocean-ledger.jsonl` | Local Ocean Ledger JSONL store |
-| `DATABASE_URL` | unset | Required when `OCEAN_LEDGER_STORE=postgres` |
+| `DATABASE_URL` | unset | Required on the server for Postgres ledger, metadata, source registry, and sync-run lineage |
 | `OCEAN_BEDROCK_MAX_UPLOAD` | `250mb` | Max upload/write size |
 | `OCEAN_BEDROCK_BOOTSTRAP_TOKEN` | unset | Creates first admin token when registry is empty |
 | `OCEAN_BEDROCK_CORS_ORIGIN` | `*` | CORS origin |

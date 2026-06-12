@@ -82,6 +82,10 @@ async function api(pathname, options = {}) {
 
 try {
   await api('/api/v1/info');
+  const noDbSources = await fetch(`${base}/api/v1/sources/adapters`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (noDbSources.status !== 503) throw new Error(`expected source adapters to require DB in ephemeral smoke, got ${noDbSources.status}`);
   await api('/api/v1/mkdir', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
