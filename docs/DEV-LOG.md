@@ -767,7 +767,7 @@ Updated local ingest:
 - Final stats are committed through `/api/v1/sync/local-folder/commit`.
 - Coworker devices only need the Bedrock URL and scoped token; `DATABASE_URL` stays on the server.
 
-Verified locally:
+Verified locally and live:
 
 ```txt
 node --check src/server.mjs
@@ -775,6 +775,10 @@ node --check src/sources.mjs
 node --check scripts/ocean-ingest-local.mjs
 npm run smoke
 npm run db:check
+Railway deploy: 202428df-c989-4ec2-b730-6e0598633877 SUCCESS
+live /health: ok
+live /api/v1/sources/adapters: 8 adapters
+live operator-contributor local ingest: sync_run_id 86ed8bdd-d108-4340-a65c-6d6af4831cd8 completed, source_record linked to object_id
 ```
 
 ## Known open gaps
@@ -794,15 +798,14 @@ source registry is V1 local_folder HTTP wiring only
 
 Recommended sequence:
 
-1. Deploy source/sync API implementation.
-2. Run one live local GUI sync with a scoped contributor token and confirm source records/sync run rows.
-3. Add embeddings client.
-4. Add Vectorize upsert fields/state.
-5. Add semantic search endpoint and MCP tool.
-6. Add GitHub adapter using the source registry.
-7. Add Telegram adapter using the source registry.
-8. Add R2 adapter or decide volume-first remains acceptable for V1.
-9. Perform security review before real coworker rollout.
+1. Add embeddings client.
+2. Add Vectorize upsert fields/state.
+3. Add semantic search endpoint and MCP tool.
+4. Prepare real coworker rollout checklist and run a small real folder dry-run.
+5. Add GitHub adapter using the source registry.
+6. Add Telegram adapter using the source registry.
+7. Add R2 adapter or decide volume-first remains acceptable for V1.
+8. Perform security review before real coworker rollout.
 
 ## Quick command appendix
 

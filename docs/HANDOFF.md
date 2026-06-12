@@ -70,6 +70,7 @@ Important deployment IDs:
 d04ef61f-3d47-4073-914e-4fedbd387a80   metadata/worker deploy
 5d31071a-0634-4c41-a261-c95bca5feba9   contributor role deploy
 54a961eb-4cf8-47cf-8d6b-791f1f324f61   landing route deploy
+202428df-c989-4ec2-b730-6e0598633877   source/sync API deploy
 ```
 
 Production env vars known to be set:
@@ -123,7 +124,8 @@ Git state at handoff:
 ```txt
 Baseline committed: a4e3133 Build and deploy Ocean Bedrock baseline
 Source helper committed: 288cda2 feat(sources): add source adapter helper module
-Source adapter registry implementation is now staged/ready for the next source-registry commit.
+Source registry/local app committed: 639491b Add Ocean Bedrock source registry and local sync app
+Source/sync HTTP API committed: b526d02 Add Ocean Bedrock source sync API
 ```
 
 Important source-registry paths:
@@ -146,14 +148,10 @@ docs/DEV-LOG.md
 Recommended next operator action:
 
 ```bash
+# Source/sync API is committed, pushed, deployed, and live-smoked.
+# Next: build embeddings/vector search or prepare a real coworker rollout checklist.
 git status --short
-npm run smoke
-npm run db:check
-git add .
-git commit -m "Add Ocean Bedrock source adapter registry"
 ```
-
-Only commit after reviewing secrets are not present.
 
 ## 6. Verification commands
 
@@ -377,32 +375,25 @@ scripts/ocean-ingest-local.mjs writes source_sync_run/source_record lineage thro
 Verified smoke:
 
 ```txt
-operator-contributor local_folder bootstrap registry: enabled
-operator-contributor local_folder ingest registry: enabled
+local checks: node --check, npm run smoke, npm run db:check
+live health: https://ocean-bedrock-production.up.railway.app/health ok
+live adapters endpoint: 8 adapters returned
+operator-contributor local_folder ingest through HTTP source/sync endpoints: enabled
 source_record created and linked to longhouse.objects.id
+latest live smoke sync_run_id: 86ed8bdd-d108-4340-a65c-6d6af4831cd8
+latest live smoke source_instance_id: dfa0db73-61aa-405c-bfcd-10584ac478f7
 ```
 
 ## 11. Next work queue
 
-### Priority 1 — Deploy source/sync API
+### Priority 1 — Embeddings and Vectorize
 
-- Review changed source/sync API files.
-- Ensure no secrets are committed.
-- Confirm `npm run smoke` passes.
-- Confirm `npm run db:check` reports source tables and 8 seeded adapters.
-- Deploy to Railway.
-- Run one live local GUI sync with a scoped contributor token and confirm source records/sync run rows.
+Source/sync API deployment is complete. Next add:
 
-### Priority 2 — Embeddings and Vectorize
-
-Add:
-
-```txt
-Cloudflare Workers AI embedding client
-Vectorize upsert support
-semantic search endpoint
-MCP semantic search tool
-```
+- Cloudflare Workers AI embedding client
+- Vectorize upsert support
+- semantic search endpoint
+- MCP semantic search tool
 
 Existing Cloudflare resource:
 
@@ -412,24 +403,7 @@ Vectorize index: ocean-longhouse-context
 
 Current chunk rows are ready to be reprocessed into vectors later.
 
-### Priority 3 — R2 object adapter
-
-Existing Cloudflare R2 bucket:
-
-```txt
-ocean-longhouse
-```
-
-Need:
-
-```txt
-R2 S3 access keys
-Railway env vars
-adapter for canonical object bytes
-backfill/migration strategy from volume to R2 if desired
-```
-
-### Priority 4 — Real coworker rollout
+### Priority 2 — Real coworker rollout prep
 
 A V0 local GUI app exists:
 
@@ -448,6 +422,23 @@ Before issuing real coworker tokens:
 - verify secrets are ignored,
 - issue contributor-only tokens,
 - confirm delete is blocked.
+
+### Priority 3 — R2 object adapter
+
+Existing Cloudflare R2 bucket:
+
+```txt
+ocean-longhouse
+```
+
+Need:
+
+```txt
+R2 S3 access keys
+Railway env vars
+adapter for canonical object bytes
+backfill/migration strategy from volume to R2 if desired
+```
 
 ## 12. Railway deploy runbook
 
