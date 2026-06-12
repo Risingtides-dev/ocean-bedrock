@@ -123,6 +123,52 @@ const tools = [
     },
   },
   {
+    name: 'bedrock_semantic_search',
+    description: 'Semantic Vectorize search over scoped Ocean Context chunks, with lexical fallback when embeddings are unavailable.',
+    inputSchema: {
+      type: 'object',
+      required: ['query'],
+      properties: {
+        query: { type: 'string' },
+        path: { type: 'string', default: '/' },
+        limit: { type: 'number', default: 10 },
+        mode: { type: 'string', enum: ['semantic', 'lexical'], default: 'semantic' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bedrock_graph_neighborhood',
+    description: 'Return graph nodes/edges around a scoped file or graph node.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        nodeId: { type: 'string' },
+        depth: { type: 'number', default: 1 },
+        limit: { type: 'number', default: 100 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bedrock_toolbox_manifest',
+    description: 'Return the Ocean Toolbox manifest for staging MCP, skills, local sync, and device auth.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'bedrock_triage_daily',
+    description: 'Run Ocean Context daily triage and write a report/ledger event.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        reportPath: { type: 'string' },
+        correlationId: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'bedrock_lock',
     description: 'Acquire a lock lease for a path before collaborative edits.',
     inputSchema: {
@@ -193,6 +239,23 @@ async function callTool(name, args = {}) {
     return textContent((await bedrock('/api/v1/mkdir', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: args.path }) })).body);
   }
   if (name === 'bedrock_search') return textContent((await bedrock(`/api/v1/search?q=${encodeURIComponent(args.query)}&path=${encodePath(args.path || '/')}&limit=${Number(args.limit || 50)}`)).body);
+  if (name === 'bedrock_semantic_search') return textContent((await bedrock(`/api/v1/semantic/search?q=${encodeURIComponent(args.query)}&path=${encodePath(args.path || '/')}&limit=${Number(args.limit || 10)}${args.mode === 'lexical' ? '&mode=lexical' : ''}`)).body);
+  if (name === 'bedrock_graph_neighborhood') {
+    const params = new URLSearchParams();
+    if (args.path) params.set('path', args.path);
+    if (args.nodeId) params.set('nodeId', args.nodeId);
+    params.set('depth', String(args.depth || 1));
+    params.set('limit', String(args.limit || 100));
+    return textContent((await bedrock(`/api/v1/graph/neighborhood?${params}`)).body);
+  }
+  if (name === 'bedrock_toolbox_manifest') return textContent((await bedrock('/api/v1/toolbox/manifest')).body);
+  if (name === 'bedrock_triage_daily') {
+    return textContent((await bedrock('/api/v1/ocean-context/triage/daily', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reportPath: args.reportPath || null, correlationId: args.correlationId || null }),
+    })).body);
+  }
   if (name === 'bedrock_lock') {
     return textContent((await bedrock('/api/v1/locks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: args.path, ttlSeconds: args.ttlSeconds || 900, note: args.note || null }) })).body);
   }

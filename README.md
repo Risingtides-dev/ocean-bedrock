@@ -15,6 +15,7 @@ This started from a “NAS” idea, but the canonical name for this service is n
 - Admin token issuing/revocation API
 - Audit log for writes, deletes, locks, and token changes
 - Server-side source registry and sync-run lineage APIs for local-folder ingest
+- Ocean Context semantic search, graph endpoints, daily triage, and toolbox manifest staging
 
 Default folders created on startup:
 
@@ -122,6 +123,8 @@ Agents should:
 - Week-one runbook: [`docs/WEEK-ONE-RUNBOOK.md`](docs/WEEK-ONE-RUNBOOK.md)
 - Coworker bootstrap: [`docs/COWORKER-BOOTSTRAP.md`](docs/COWORKER-BOOTSTRAP.md)
 - Local GUI companion app: [`docs/LOCAL-GUI-APP.md`](docs/LOCAL-GUI-APP.md)
+- Ocean Context: [`docs/OCEAN-CONTEXT.md`](docs/OCEAN-CONTEXT.md)
+- Ocean Toolbox bootstrap: [`docs/OCEAN-TOOLBOX-BOOTSTRAP.md`](docs/OCEAN-TOOLBOX-BOOTSTRAP.md)
 - Source adapter precedents: [`docs/SOURCE-ADAPTER-PRECEDENTS.md`](docs/SOURCE-ADAPTER-PRECEDENTS.md)
 - MCP wrapper: [`docs/MCP.md`](docs/MCP.md)
 - Ocean Longhouse architecture: [`docs/OCEAN-LONGHOUSE.md`](docs/OCEAN-LONGHOUSE.md)
@@ -142,6 +145,11 @@ Agents should:
 | `OCEAN_BEDROCK_MAX_UPLOAD` | `250mb` | Max upload/write size |
 | `OCEAN_BEDROCK_BOOTSTRAP_TOKEN` | unset | Creates first admin token when registry is empty |
 | `OCEAN_BEDROCK_CORS_ORIGIN` | `*` | CORS origin |
+| `CLOUDFLARE_ACCOUNT_ID` | unset | Required for Workers AI embeddings and Vectorize |
+| `CLOUDFLARE_API_TOKEN` | unset | Required for Workers AI embeddings and Vectorize |
+| `OCEAN_VECTORIZE_INDEX` | `ocean-longhouse-context` | Cloudflare Vectorize index name |
+| `OCEAN_EMBEDDING_MODEL` | `@cf/baai/bge-base-en-v1.5` | Workers AI embedding model |
+| `OCEAN_EMBEDDING_DIMENSIONS` | `768` | Embedding vector dimensions |
 
 ## Postgres readiness
 

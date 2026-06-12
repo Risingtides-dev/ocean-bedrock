@@ -2,6 +2,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { Pool } from 'pg';
+import { embedObjectChunks } from './semantic.mjs';
+import { extractGraphForObject } from './graph.mjs';
 
 let pool = null;
 
@@ -146,6 +148,14 @@ export async function completeIngestJob(jobId, status, error = null) {
 }
 
 export async function processIngestJob(state, job) {
+  if (job.job_type === 'embed_object') {
+    if (!job.object_id) return { skipped: true, reason: 'missing object_id' };
+    return embedObjectChunks(getPool(), job.object_id, job.payload || {});
+  }
+  if (job.job_type === 'extract_graph') {
+    if (!job.object_id) return { skipped: true, reason: 'missing object_id' };
+    return extractGraphForObject(getPool(), job.object_id);
+  }
   if (job.job_type !== 'index_object') return { skipped: true, reason: `unsupported job_type ${job.job_type}` };
   if (!job.virtual_path || !job.object_id) return { skipped: true, reason: 'missing virtual_path/object_id' };
 
@@ -161,7 +171,7 @@ export async function processIngestJob(state, job) {
 
   const text = await fs.readFile(diskPath, 'utf8');
   const chunks = chunkText(text);
-  await db.query('DELETE FROM longhouse.embedding_chunks WHERE object_id = $1 AND embedding_model = $2', [job.object_id, 'text-chunk-v1']);
+  await db.query('DELETE FROM longhouse.embedding_chunks WHERE object_id = $1', [job.object_id]);
 
   for (let i = 0; i < chunks.length; i += 1) {
     const chunk = chunks[i];
@@ -204,7 +214,10 @@ export async function processIngestJob(state, job) {
     [job.object_id, JSON.stringify({ indexedAt: new Date().toISOString(), chunks: chunks.length, indexModel: 'text-chunk-v1' })],
   );
 
-  return { indexed: true, chunks: chunks.length, bytes: stat.size };
+  await enqueueIngestJob('embed_object', job.virtual_path, job.object_id, { reason: 'index_object', force: true });
+  await enqueueIngestJob('extract_graph', job.virtual_path, job.object_id, { reason: 'index_object' });
+
+  return { indexed: true, chunks: chunks.length, bytes: stat.size, queued: ['embed_object', 'extract_graph'] };
 }
 
 function chunkText(text, maxChars = Number(process.env.OCEAN_BEDROCK_CHUNK_CHARS || 4000), overlap = Number(process.env.OCEAN_BEDROCK_CHUNK_OVERLAP || 400)) {

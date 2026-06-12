@@ -21,10 +21,16 @@ bedrock_read(path)
 bedrock_write(path, content, contentType?, ifNoneMatch?)
 bedrock_mkdir(path)
 bedrock_search(query, path?, limit?)
+bedrock_semantic_search(query, path?, limit?, mode?)
+bedrock_graph_neighborhood(path?, nodeId?, depth?, limit?)
+bedrock_toolbox_manifest()
+bedrock_triage_daily(reportPath?, correlationId?)
 bedrock_lock(path, ttlSeconds?, note?)
 bedrock_unlock(lockId)
 bedrock_trace(correlationId, limit?)
 bedrock_snapshot(name, correlationId?, virtualPath?, files?, events?, summary?, clearance?, metadata?)
+
+Semantic/graph/triage tools require server-side Postgres. Semantic mode requires Cloudflare Workers AI + Vectorize env; otherwise use `mode: "lexical"` for chunk fallback.
 ```
 
 ## Resources

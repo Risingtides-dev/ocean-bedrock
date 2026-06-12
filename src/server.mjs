@@ -24,6 +24,18 @@ import {
   recordObjectWrite,
 } from './metadata.mjs';
 import {
+  graphNeighborhood,
+  listGraphNodes,
+} from './graph.mjs';
+import {
+  runOceanContextTriage,
+  toolboxManifest,
+} from './ocean-context.mjs';
+import {
+  semanticSearch,
+  semanticStatus,
+} from './semantic.mjs';
+import {
   completeSourceSyncRun,
   createSourceSyncRun,
   failSourceSyncRun,
@@ -1068,6 +1080,75 @@ async function handleLocalFolderCommit(req, res, state, principal) {
   jsonResponse(res, 200, { syncRun: await getSourceSyncRun(db, updated.id) });
 }
 
+async function handleSemanticSearch(req, res, state, principal, url) {
+  requirePermission(principal, 'read');
+  const query = url.searchParams.get('q') || url.searchParams.get('query');
+  if (!query) throw new HttpError(400, 'Missing q query parameter.');
+  const apiPath = normalizeApiPath(url.searchParams.get('path') || '/');
+  requirePathScope(principal, apiPath);
+  const db = sourceDatabase();
+  const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 10), 50));
+  const result = await semanticSearch(db, query, { path: apiPath, limit, mode: url.searchParams.get('mode') || undefined });
+  const matches = result.matches.filter((match) => {
+    if (!match.virtual_path) return false;
+    try {
+      return pathInScopes(normalizeApiPath(match.virtual_path), principal.scopes || ['/']);
+    } catch {
+      return false;
+    }
+  });
+  jsonResponse(res, 200, { ...result, path: apiPath, query, matches });
+}
+
+async function handleGraphNodes(req, res, state, principal, url) {
+  requirePermission(principal, 'read');
+  const db = sourceDatabase();
+  const apiPath = normalizeApiPath(url.searchParams.get('path') || '/');
+  requirePathScope(principal, apiPath);
+  const rows = await listGraphNodes(db, {
+    path: apiPath,
+    type: url.searchParams.get('type') || undefined,
+    q: url.searchParams.get('q') || undefined,
+    limit: url.searchParams.get('limit') || 100,
+  });
+  const nodes = rows.filter((node) => node.virtual_path && pathInScopes(normalizeApiPath(node.virtual_path), principal.scopes || ['/']));
+  jsonResponse(res, 200, { path: apiPath, nodes });
+}
+
+async function handleGraphNeighborhood(req, res, state, principal, url) {
+  requirePermission(principal, 'read');
+  const db = sourceDatabase();
+  const apiPath = url.searchParams.has('path') ? normalizeApiPath(url.searchParams.get('path')) : null;
+  if (apiPath) requirePathScope(principal, apiPath);
+  const result = await graphNeighborhood(db, {
+    path: apiPath,
+    node_id: url.searchParams.get('node_id') || url.searchParams.get('nodeId') || undefined,
+    depth: url.searchParams.get('depth') || 1,
+    limit: url.searchParams.get('limit') || 100,
+  });
+  if (result.start?.virtual_path) requirePathScope(principal, normalizeApiPath(result.start.virtual_path));
+  const visibleNodeIds = new Set(result.nodes.filter((node) => !node.virtual_path || pathInScopes(normalizeApiPath(node.virtual_path), principal.scopes || ['/'])).map((node) => node.id));
+  jsonResponse(res, 200, {
+    ...result,
+    nodes: result.nodes.filter((node) => visibleNodeIds.has(node.id)),
+    edges: result.edges.filter((edge) => visibleNodeIds.has(edge.from_node_id) && visibleNodeIds.has(edge.to_node_id)),
+  });
+}
+
+async function handleOceanContextTriage(req, res, state, principal) {
+  requirePermission(principal, 'write');
+  requirePathScope(principal, '/context/ocean-bedrock');
+  const body = req.method === 'POST' ? await readJsonBody(req, state.maxJsonBytes) : {};
+  requireClearance(principal, body.clearance || 'CONFIDENTIAL');
+  const result = await runOceanContextTriage(state, principal, {
+    reportPath: body.reportPath || body.report_path || undefined,
+    correlationId: body.correlationId || body.correlation_id || undefined,
+    ledgerLimit: body.ledgerLimit || body.ledger_limit || 25,
+    clearance: body.clearance || 'CONFIDENTIAL',
+  });
+  jsonResponse(res, 201, result);
+}
+
 async function seedDefaultFolders(state) {
   const folders = ['docs', 'context', 'sessions', 'handoffs', 'shared', 'vault'];
   for (const folder of folders) {
@@ -1236,6 +1317,10 @@ export function createOceanBedrockServer(options = {}) {
           file: '/api/v1/file?path=/docs/README.md&inline=1',
           ledger: '/api/v1/ledger/events',
           sources: '/api/v1/sources/adapters',
+          semanticSearch: '/api/v1/semantic/search?q=term&path=/context',
+          graph: '/api/v1/graph/neighborhood?path=/docs/README.md',
+          oceanContextTriage: '/api/v1/ocean-context/triage/daily',
+          toolbox: '/api/v1/toolbox/manifest',
           localFolderSync: '/api/v1/sync/local-folder/plan',
         },
         note: 'Most /api/v1 routes require Authorization: Bearer <token>.',
@@ -1272,6 +1357,7 @@ export function createOceanBedrockServer(options = {}) {
           store: state.ledger.kind,
           localFile: state.ledger.kind === 'jsonl' ? state.ledgerFile : undefined,
         },
+        semantic: semanticStatus(),
         principal,
       });
       return;
@@ -1452,6 +1538,33 @@ export function createOceanBedrockServer(options = {}) {
     if (req.method === 'GET' && url.pathname === '/api/v1/ledger/verify') {
       requirePermission(principal, 'admin');
       jsonResponse(res, 200, await state.ledger.verify());
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/v1/semantic/search') {
+      await handleSemanticSearch(req, res, state, principal, url);
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/v1/graph/nodes') {
+      await handleGraphNodes(req, res, state, principal, url);
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/v1/graph/neighborhood') {
+      await handleGraphNeighborhood(req, res, state, principal, url);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/v1/ocean-context/triage/daily') {
+      await handleOceanContextTriage(req, res, state, principal);
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/v1/toolbox/manifest') {
+      requirePermission(principal, 'read');
+      const proto = String(req.headers['x-forwarded-proto'] || url.protocol.replace(/:$/, '') || 'https').split(',')[0].trim();
+      jsonResponse(res, 200, toolboxManifest({ baseUrl: `${proto}://${req.headers.host}`, principal }));
       return;
     }
 

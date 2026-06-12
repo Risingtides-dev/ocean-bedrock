@@ -20,7 +20,11 @@ try {
       to_regclass('longhouse.source_instances') AS source_instances_table,
       to_regclass('longhouse.source_streams') AS source_streams_table,
       to_regclass('longhouse.source_sync_runs') AS source_sync_runs_table,
-      to_regclass('longhouse.source_records') AS source_records_table
+      to_regclass('longhouse.source_records') AS source_records_table,
+      to_regclass('longhouse.embedding_chunks') AS embedding_chunks_table,
+      to_regclass('longhouse.graph_nodes') AS graph_nodes_table,
+      to_regclass('longhouse.graph_edges') AS graph_edges_table,
+      to_regclass('longhouse.ingest_jobs') AS ingest_jobs_table
   `);
   const row = result.rows[0];
   let sourceAdaptersSeeded = 0;
@@ -48,6 +52,24 @@ try {
     && row.source_sync_runs_table
     && row.source_records_table,
   );
+  const semanticCounts = row.embedding_chunks_table ? (await pool.query(`
+    SELECT
+      count(*)::int AS chunks,
+      count(*) FILTER (WHERE vectorize_id IS NOT NULL)::int AS vectorized,
+      count(*) FILTER (WHERE vectorize_id IS NULL)::int AS pending
+    FROM longhouse.embedding_chunks
+  `)).rows[0] : null;
+  const graphCounts = row.graph_nodes_table ? (await pool.query(`
+    SELECT
+      (SELECT count(*)::int FROM longhouse.graph_nodes) AS nodes,
+      (SELECT count(*)::int FROM longhouse.graph_edges) AS edges
+  `)).rows[0] : null;
+  const ingestCounts = row.ingest_jobs_table ? (await pool.query(`
+    SELECT status, count(*)::int AS count
+    FROM longhouse.ingest_jobs
+    GROUP BY status
+    ORDER BY status
+  `)).rows : [];
   console.log(JSON.stringify({
     ok: true,
     database: row.database,
@@ -62,8 +84,15 @@ try {
       sourceStreams: row.source_streams_table,
       sourceSyncRuns: row.source_sync_runs_table,
       sourceRecords: row.source_records_table,
+      embeddingChunks: row.embedding_chunks_table,
+      graphNodes: row.graph_nodes_table,
+      graphEdges: row.graph_edges_table,
+      ingestJobs: row.ingest_jobs_table,
     },
     sourceAdaptersSeeded,
+    semantic: semanticCounts,
+    graph: graphCounts,
+    ingestJobs: ingestCounts,
   }, null, 2));
 } finally {
   await pool.end();

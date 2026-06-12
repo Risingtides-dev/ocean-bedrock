@@ -781,26 +781,54 @@ live /api/v1/sources/adapters: 8 adapters
 live operator-contributor local ingest: sync_run_id 86ed8bdd-d108-4340-a65c-6d6af4831cd8 completed, source_record linked to object_id
 ```
 
+## 2026-06-12 — Ocean Context semantic/graph/toolbox staging
+
+Added the first Ocean Context wave:
+
+- Cloudflare Workers AI embedding client (`src/semantic.mjs`) using `@cf/baai/bge-base-en-v1.5`.
+- Cloudflare Vectorize upsert/query support for `ocean-longhouse-context`.
+- `/api/v1/semantic/search` endpoint with lexical chunk fallback.
+- `embed_object` ingest job support after `index_object`.
+- Lightweight graph extraction (`src/graph.mjs`) and `/api/v1/graph/*` endpoints.
+- Ocean Context daily triage (`src/ocean-context.mjs`) and `npm run ocean:triage`.
+- `/api/v1/toolbox/manifest` for staging coworker computer auth, MCP, skills, and local companion setup.
+- MCP tools for semantic search, graph neighborhood, toolbox manifest, and daily triage.
+
+New docs:
+
+```txt
+docs/OCEAN-CONTEXT.md
+docs/OCEAN-TOOLBOX-BOOTSTRAP.md
+```
+
+Cloudflare smoke:
+
+```txt
+Workers AI embedding dims: 768
+Vectorize upsert mutation accepted
+Vectorize query returned the smoke vector after async index propagation
+```
+
 ## Known open gaps
 
 ```txt
-no real embeddings
-no Vectorize upsert/search
 no R2 object bytes adapter
 no GitHub/Telegram/Slack/Notion/Linear adapter runners yet
 no automatic local watcher daemon
 no encrypted vault/secrets manager
 failed ingest jobs need inspection/cleanup
 source registry is V1 local_folder HTTP wiring only
+entity/relationship extraction is still heuristic
+daily Ocean Context triage needs a dedicated cron/service for automatic scheduling
 ```
 
 ## Next development sequence
 
 Recommended sequence:
 
-1. Add embeddings client.
-2. Add Vectorize upsert fields/state.
-3. Add semantic search endpoint and MCP tool.
+1. Deploy Ocean Context semantic/graph/toolbox wave.
+2. Backfill existing chunks into Vectorize and run graph extraction.
+3. Add dedicated daily triage cron/service.
 4. Prepare real coworker rollout checklist and run a small real folder dry-run.
 5. Add GitHub adapter using the source registry.
 6. Add Telegram adapter using the source registry.

@@ -82,10 +82,16 @@ async function api(pathname, options = {}) {
 
 try {
   await api('/api/v1/info');
+  const toolbox = await api('/api/v1/toolbox/manifest');
+  if (!toolbox.body.mcp?.tools?.includes('bedrock_semantic_search')) throw new Error('toolbox manifest missing semantic MCP tool');
   const noDbSources = await fetch(`${base}/api/v1/sources/adapters`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (noDbSources.status !== 503) throw new Error(`expected source adapters to require DB in ephemeral smoke, got ${noDbSources.status}`);
+  const noDbSemantic = await fetch(`${base}/api/v1/semantic/search?q=hello&path=/docs`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (noDbSemantic.status !== 503) throw new Error(`expected semantic search to require DB in ephemeral smoke, got ${noDbSemantic.status}`);
   await api('/api/v1/mkdir', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

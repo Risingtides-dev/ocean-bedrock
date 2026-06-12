@@ -89,6 +89,28 @@ Same body as move, but copies recursively.
 
 Simple text search across scoped files. Large/binary files are skipped.
 
+## Semantic search, graph, Ocean Context, and toolbox
+
+### `GET /api/v1/semantic/search?q=...&path=/context&limit=10`
+
+Searches indexed chunks through Cloudflare Workers AI embeddings + Cloudflare Vectorize when configured. Results are filtered by token path scope. If semantic env is not configured, use `mode=lexical` or rely on lexical chunk fallback.
+
+### `GET /api/v1/graph/nodes?path=/context&type=file&limit=100`
+
+Lists graph nodes visible under a scoped path.
+
+### `GET /api/v1/graph/neighborhood?path=/context/file.md&depth=2`
+
+Returns nearby graph nodes/edges for a scoped file or graph node.
+
+### `POST /api/v1/ocean-context/triage/daily`
+
+Runs the daily Ocean Context triage, writes `/context/ocean-bedrock/triage/YYYY-MM-DD.md`, and appends an `ocean_context.triage.completed` ledger event.
+
+### `GET /api/v1/toolbox/manifest`
+
+Returns the token-free Ocean Toolbox manifest for MCP setup, local companion app behavior, skill categories, and staged computer-auth flow.
+
 ## Source registry and sync runs
 
 Source registry endpoints are server-side Postgres-backed lineage APIs. Coworker devices should call these through Ocean Bedrock with their scoped bearer token; they should not receive `DATABASE_URL`.

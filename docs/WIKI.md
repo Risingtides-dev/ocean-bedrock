@@ -191,6 +191,11 @@ POST   /api/v1/ledger/events
 GET    /api/v1/ledger/trace?correlation_id=...
 POST   /api/v1/ledger/snapshots
 GET    /api/v1/ledger/verify
+GET    /api/v1/semantic/search?q=...&path=...
+GET    /api/v1/graph/nodes?path=...
+GET    /api/v1/graph/neighborhood?path=...
+POST   /api/v1/ocean-context/triage/daily
+GET    /api/v1/toolbox/manifest
 GET    /api/v1/sources/adapters
 GET    /api/v1/sources/instances
 POST   /api/v1/sources/instances
@@ -243,6 +248,10 @@ bedrock_read
 bedrock_write
 bedrock_mkdir
 bedrock_search
+bedrock_semantic_search
+bedrock_graph_neighborhood
+bedrock_toolbox_manifest
+bedrock_triage_daily
 bedrock_lock
 bedrock_unlock
 bedrock_trace
@@ -318,13 +327,12 @@ When a file is written through HTTP/MCP/local ingest:
 ```txt
 file write
   -> record object metadata in Postgres longhouse.objects
-  -> enqueue longhouse.ingest_jobs row
-  -> background worker claims queued job
-  -> worker reads file from volume
-  -> textual files are chunked
-  -> chunks inserted into longhouse.embedding_chunks
-  -> basic file node upserted into longhouse.graph_nodes
-  -> object metadata updated with indexedAt/chunks/indexModel
+  -> enqueue index_object job
+  -> background worker reads file from volume
+  -> textual files are chunked into longhouse.embedding_chunks
+  -> enqueue embed_object + extract_graph jobs
+  -> embed_object calls Workers AI and upserts to Vectorize
+  -> extract_graph creates file/directory/heading/topic/link/source lineage edges
   -> ledger/audit activity records the action
 ```
 
@@ -344,23 +352,47 @@ source sync runs:      2 completed, 3 cancelled debug runs
 source records:        2
 ```
 
-Current chunking model:
+Current semantic/graph model:
 
 ```txt
-embedding_provider: none
-embedding_model:    text-chunk-v1
-dimensions:         0
-vectorized:         0
+chunk staging model: text-chunk-v1
+embedding provider: cloudflare-workers-ai when configured
+embedding model:    @cf/baai/bge-base-en-v1.5
+Vectorize index:    ocean-longhouse-context
+graph extraction:   file, directory, heading, topic, link, source lineage
 ```
 
 Meaning:
 
 ```txt
-YES: file intake, metadata, jobs, worker, text chunking, chunk index, basic graph nodes
-NO:  real embeddings, Vectorize upserts, semantic/vector search, entity extraction
+YES: file intake, metadata, jobs, worker, text chunking, Workers AI embeddings, Vectorize upserts, semantic search endpoint, lightweight graph extraction
+LIMIT: entity extraction is heuristic; Vectorize queries are async/eventually consistent
 ```
 
-## 10. Source adapter registry
+
+## 10. Ocean Context, semantic search, graph, and triage
+
+Ocean Context is the actionable layer over files, chunks, vectors, graph edges, source records, and ledger events. See `docs/OCEAN-CONTEXT.md`.
+
+Current endpoints:
+
+```txt
+GET  /api/v1/semantic/search?q=...&path=/context
+GET  /api/v1/graph/nodes?path=/context
+GET  /api/v1/graph/neighborhood?path=/context/file.md&depth=2
+POST /api/v1/ocean-context/triage/daily
+GET  /api/v1/toolbox/manifest
+```
+
+Daily triage writes:
+
+```txt
+/context/ocean-bedrock/triage/YYYY-MM-DD.md
+```
+
+It also emits `ocean_context.triage.completed` into Ocean Ledger.
+
+## 11. Source adapter registry
 
 The precedent research is documented in:
 
@@ -415,7 +447,7 @@ Google Drive
 R2
 ```
 
-## 11. Postgres tables currently used
+## 12. Postgres tables currently used
 
 Known live tables include:
 
