@@ -71,6 +71,7 @@ d04ef61f-3d47-4073-914e-4fedbd387a80   metadata/worker deploy
 5d31071a-0634-4c41-a261-c95bca5feba9   contributor role deploy
 54a961eb-4cf8-47cf-8d6b-791f1f324f61   landing route deploy
 202428df-c989-4ec2-b730-6e0598633877   source/sync API deploy
+db04d2f4-e87b-406b-80e5-c4a9c254272a   Ocean Context semantic/graph/toolbox deploy
 ```
 
 Production env vars known to be set:
@@ -82,6 +83,12 @@ OCEAN_LEDGER_STORE=postgres
 OCEAN_BEDROCK_WORKER_ENABLED=true
 DATABASE_URL=<Railway Postgres URL>
 OCEAN_BEDROCK_BOOTSTRAP_TOKEN=<secret>
+CLOUDFLARE_ACCOUNT_ID=<set>
+CLOUDFLARE_API_TOKEN=<secret>
+OCEAN_VECTORIZE_INDEX=ocean-longhouse-context
+OCEAN_EMBEDDING_MODEL=@cf/baai/bge-base-en-v1.5
+OCEAN_EMBEDDING_DIMENSIONS=768
+OCEAN_EMBEDDING_POOLING=cls
 ```
 
 ## 4. Token locations
@@ -386,22 +393,14 @@ latest live smoke source_instance_id: dfa0db73-61aa-405c-bfcd-10584ac478f7
 
 ## 11. Next work queue
 
-### Priority 1 — Embeddings and Vectorize
+### Priority 1 — Automate daily Ocean Context triage
 
-Source/sync API deployment is complete. Next add:
+Semantic search, graph extraction, MCP/toolbox manifest, and manual triage are deployed. Next harden daily operation:
 
-- Cloudflare Workers AI embedding client
-- Vectorize upsert support
-- semantic search endpoint
-- MCP semantic search tool
-
-Existing Cloudflare resource:
-
-```txt
-Vectorize index: ocean-longhouse-context
-```
-
-Current chunk rows are ready to be reprocessed into vectors later.
+- create a dedicated Railway cron/service for `npm run ocean:triage`,
+- route triage findings to Telegram/operator dashboard,
+- add cleanup/retry workflow for the 9 historical failed ingest jobs,
+- expand triage to detect stale source streams and missing coworker device heartbeats.
 
 ### Priority 2 — Real coworker rollout prep
 
@@ -411,19 +410,28 @@ A V0 local GUI app exists:
 npm run ocean:app
 ```
 
-It lets coworkers paste a scoped token, choose folders, run manual sync, and schedule sync while the app is open. See `docs/LOCAL-GUI-APP.md`.
-
 Before issuing real coworker tokens:
 
 - confirm path scopes,
 - document install instructions,
+- package the GUI/download flow,
+- add one-time invite exchange instead of raw token paste,
 - run a small real folder dry-run,
 - inspect skipped files,
 - verify secrets are ignored,
 - issue contributor-only tokens,
 - confirm delete is blocked.
 
-### Priority 3 — R2 object adapter
+### Priority 3 — Richer graph/entity extraction
+
+Current graph extraction is heuristic. Next add:
+
+- people/project/client/task entities,
+- stronger source-record to ledger correlation,
+- graph-backed context packs for agents,
+- graph/semantic result fusion.
+
+### Priority 4 — R2 object adapter
 
 Existing Cloudflare R2 bucket:
 
@@ -467,14 +475,15 @@ curl -fsS https://ocean-bedrock-production.up.railway.app/health
 
 ## 13. Known issues
 
-1. Embeddings/Vectorize are not implemented.
+1. Semantic search + Vectorize are live, but graph/entity extraction is still heuristic.
 2. R2 bucket exists but object adapter/keys are not wired.
-3. Failed ingest jobs exist from earlier worker attempts; inspect before production cleanup.
+3. 9 failed ingest jobs exist from earlier worker attempts; inspect before production cleanup.
 4. Token registry is volume JSON, not Postgres; okay for one Railway replica, not ideal for multi-replica.
 5. `/vault` is just a folder placeholder, not an encrypted secrets vault.
-6. Current search is file text search, not semantic search.
-7. Current graph only creates basic file nodes, not entity/relationship extraction.
+6. `/api/v1/search` is still plain file text search; semantic search lives at `/api/v1/semantic/search`.
+7. Current graph extracts file/directory/heading/topic/link/source-lineage nodes, but not rich business entities yet.
 8. Source registry currently has V1 local_folder wiring only; GitHub/Telegram/Slack/Notion/Linear/Drive/R2 adapter runners are not implemented yet.
+9. Daily Ocean Context triage is endpoint/script-backed; a dedicated scheduler is not deployed yet.
 
 ## 14. Acceptance criteria for next handoff
 

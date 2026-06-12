@@ -801,12 +801,18 @@ docs/OCEAN-CONTEXT.md
 docs/OCEAN-TOOLBOX-BOOTSTRAP.md
 ```
 
-Cloudflare smoke:
+Cloudflare/live smoke:
 
 ```txt
 Workers AI embedding dims: 768
 Vectorize upsert mutation accepted
 Vectorize query returned the smoke vector after async index propagation
+Railway deploy: db04d2f4-e87b-406b-80e5-c4a9c254272a SUCCESS
+live /api/v1/info semantic.enabled: true
+live /api/v1/semantic/search: vectorize results returned
+live /api/v1/graph/neighborhood: nodes/edges returned
+live /api/v1/ocean-context/triage/daily: /context/ocean-bedrock/triage/2026-06-12.md
+DB after triage: chunks=31 vectorized=31 pending=0 graphNodes=59 graphEdges=57
 ```
 
 ## Known open gaps
@@ -826,10 +832,10 @@ daily Ocean Context triage needs a dedicated cron/service for automatic scheduli
 
 Recommended sequence:
 
-1. Deploy Ocean Context semantic/graph/toolbox wave.
-2. Backfill existing chunks into Vectorize and run graph extraction.
-3. Add dedicated daily triage cron/service.
-4. Prepare real coworker rollout checklist and run a small real folder dry-run.
+1. Add dedicated daily triage cron/service.
+2. Prepare real coworker rollout checklist and run a small real folder dry-run.
+3. Package/download local companion GUI and one-time invite flow.
+4. Add richer graph/entity extraction and graph/semantic result fusion.
 5. Add GitHub adapter using the source registry.
 6. Add Telegram adapter using the source registry.
 7. Add R2 adapter or decide volume-first remains acceptable for V1.
